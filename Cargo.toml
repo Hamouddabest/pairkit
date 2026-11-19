@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# "ring" turns on rustls with the ring crypto backend. The build failed without a TLS
-# feature, because idevice's code needs one.
-idevice = { version = "0.1.64", default-features = false, features = ["remote_pairing", "ring"] }
+idevice = { version = "0.1.68", default-features = false, features = ["remote_pairing", "ring", "tcp", "tunnel_tcp_stack", "rsd", "xpc", "afc", "installation_proxy"] }
+isideload = { version = "0.5.2", default-features = false, features = ["install", "fs-storage", "tokio-mt"] }
+rootcause = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process", "fs", "io-util"] }
 
 [profile.release]

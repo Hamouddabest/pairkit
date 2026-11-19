@@ -2,6 +2,8 @@
 // No signing, no installing. Written against idevice 0.1.64, not yet compiled:
 // if the build fails, paste the error and it will be fixed.
 
+mod install;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -67,7 +69,18 @@ async fn export_to_clipboard(bytes: &[u8]) {
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = run().await {
+    let args: Vec<String> = std::env::args().collect();
+    let res = match args.get(1).map(|s| s.as_str()) {
+        Some("install") => install::run(args.get(2).map(|s| s.as_str()).unwrap_or("sidestore")).await,
+        Some("--help") | Some("-h") | Some("help") => {
+            println!("pairkit            pair this iPhone with itself and copy the pairing file");
+            println!("pairkit install sidestore   sign in with your Apple ID, sign SideStore and install it");
+            println!("pairkit install altstore    same, for AltStore");
+            Ok(())
+        }
+        _ => run().await,
+    };
+    if let Err(e) = res {
         eprintln!("\nError: {e}");
         std::process::exit(1);
     }
