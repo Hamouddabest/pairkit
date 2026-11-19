@@ -3,6 +3,7 @@
 // if the build fails, paste the error and it will be fixed.
 
 mod install;
+mod ui;
 
 use std::path::PathBuf;
 use std::time::Duration;

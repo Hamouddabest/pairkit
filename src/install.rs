@@ -1,7 +1,10 @@
 // Install stage: sign in with an Apple ID, sign SideStore/AltStore, install over the
 // on-device tunnel (needs LocalDevVPN on and the pairing file from `pairkit`).
 
-use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use crate::ui::{self, Ui};
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -33,22 +36,6 @@ fn home_dir() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn ask(prompt: &str) -> String {
-    print!("{prompt}");
-    let _ = std::io::stdout().flush();
-    let mut s = String::new();
-    let _ = std::io::stdin().lock().read_line(&mut s);
-    s.trim().to_string()
-}
-
-fn ask_secret(prompt: &str) -> String {
-    let _ = std::process::Command::new("stty").arg("-echo").status();
-    let s = ask(prompt);
-    let _ = std::process::Command::new("stty").arg("echo").status();
-    println!();
-    s
-}
-
 fn e<T: std::fmt::Debug>(x: T) -> Err {
     format!("{x:?}").into()
 }
@@ -56,6 +43,27 @@ fn e<T: std::fmt::Debug>(x: T) -> Err {
 type ExtCb = fn(&[Bundle]) -> std::future::Ready<Result<ExtensionsBehavior, Report>>;
 
 pub async fn run(which: &str) -> Result<(), Err> {
+    // reqwest (used by isideload) needs a rustls crypto provider to be installed first.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let ui = Arc::new(Ui::default());
+    let port = ui::serve(ui.clone()).await?;
+    let url = format!("http://127.0.0.1:{port}/");
+    ui.log(format!("Opening the pairkit page: {url}"));
+    let opened = tokio::process::Command::new("minis-open").arg(&url).status().await.map(|s| s.success()).unwrap_or(false);
+    if !opened {
+        ui.log(format!("Could not open it automatically. Open this address in a browser: {url}"));
+    }
+    let res = run_inner(which, ui.clone()).await;
+    match &res {
+        Ok(()) => ui.log("All done."),
+        Err(err) => ui.log(format!("ERROR: {err}")),
+    }
+    ui.finish();
+    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    res
+}
+
+async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
     let (name, url) = match which {
         "altstore" => ("AltStore", "https://cdn.altstore.io/file/altstore/altstore.ipa"),
         _ => ("SideStore", "https://github.com/SideStore/SideStore/releases/latest/download/SideStore.ipa"),
@@ -70,15 +78,18 @@ pub async fn run(which: &str) -> Result<(), Err> {
     let pairing_bytes = pairing_file.to_bytes();
 
     // 1. Apple ID first, so you can see problems before the tunnel work.
-    println!("== Apple ID ==");
-    let email = ask("Apple ID email: ");
-    let password = ask_secret("Password (hidden, never saved): ");
+    ui.log(format!("== Apple ID =="));
+    let email = ui.ask("Apple ID email", false).await;
+    let password = ui.ask("Apple ID password (not saved)", true).await;
 
-    let two_factor = |p: TwoFactorCallbackParams| async move {
+    let ui2 = ui.clone();
+    let two_factor = move |p: TwoFactorCallbackParams| {
+        let ui = ui2.clone();
+        async move {
         if let Some(err) = &p.last_error {
-            println!("2FA problem: {err}");
+            ui.log(format!("2FA problem: {err}"));
         }
-        let code = ask("Enter the 6-digit Apple verification code (or 'r' to resend): ");
+        let code = ui.ask("Enter the 6-digit Apple verification code (type r to resend)", false).await;
         if code.eq_ignore_ascii_case("r") {
             Ok(TwoFactorCallbackResponse::ResendCode)
         } else if code.is_empty() {
@@ -86,14 +97,15 @@ pub async fn run(which: &str) -> Result<(), Err> {
         } else {
             Ok::<_, Report>(TwoFactorCallbackResponse::SubmitCode(code))
         }
+        }
     };
-    println!("Signing in...");
+    ui.log(format!("Signing in..."));
     let mut account = AppleAccountBuilder::new(&email).login(&password, two_factor).await.map_err(e)?;
     let mut dev_session = DeveloperSession::from_account(&mut account).await.map_err(e)?;
     drop(password);
 
     // 2. Tunnel to the phone.
-    println!("== Connecting to this iPhone (LocalDevVPN must be ON) ==");
+    ui.log(format!("== Connecting to this iPhone (LocalDevVPN must be ON) =="));
     let stream = TcpStream::connect((DEVICE_IP, DEVICE_PORT)).await?;
     let mut client = RemotePairingClient::new(RpPairingSocket::new(stream), "pairkit");
     client.attempt_pair_verify().await.map_err(e)?;
@@ -116,7 +128,7 @@ pub async fn run(which: &str) -> Result<(), Err> {
         .and_then(|v| v.as_string())
         .map(|s| s.to_string())
         .ok_or("The phone did not report its UDID")?;
-    println!("Connected. Device {udid}");
+    ui.log(format!("Connected. Device {udid}"));
 
     // 3. Register the phone on your account.
     let teams = dev_session.list_teams().await.map_err(e)?;
@@ -128,7 +140,7 @@ pub async fn run(which: &str) -> Result<(), Err> {
 
     // 4. Download the app.
     let ipa = dir.join(format!("{name}.ipa"));
-    println!("== Downloading {name} ==");
+    ui.log(format!("== Downloading {name} =="));
     let st = tokio::process::Command::new("wget").arg("-q").arg("-O").arg(&ipa).arg(url).status().await?;
     if !st.success() {
         return Err(format!("Download failed. Try: wget -O {} {url}", ipa.display()).into());
@@ -136,13 +148,16 @@ pub async fn run(which: &str) -> Result<(), Err> {
 
     // 5. Sign. Reuses the certificate pairkit made before; if your account is full, it asks
     //    which certificate to revoke (an old certificate can't be reused without its private key).
-    println!("== Signing ==");
-    let max_certs = |certs: Vec<DevelopmentCertificate>| async move {
-        println!("Your Apple ID has the maximum number of development certificates:");
+    ui.log(format!("== Signing =="));
+    let ui3 = ui.clone();
+    let max_certs = move |certs: Vec<DevelopmentCertificate>| {
+        let ui = ui3.clone();
+        async move {
+        ui.log("Your Apple ID has the maximum number of development certificates:");
         for (i, c) in certs.iter().enumerate() {
-            println!("  {}: {} ({})", i + 1, c.name.clone().unwrap_or_default(), c.machine_name.clone().unwrap_or_default());
+            ui.log(format!("  {}: {} ({})", i + 1, c.name.clone().unwrap_or_default(), c.machine_name.clone().unwrap_or_default()));
         }
-        let a = ask("Type the numbers to revoke (e.g. 1 or 1,2), or just Enter to cancel: ");
+        let a = ui.ask("Type the numbers to revoke (e.g. 1 or 1,2), or leave empty to cancel", false).await;
         let mut ids = Vec::new();
         for part in a.split(',') {
             if let Ok(n) = part.trim().parse::<usize>() {
@@ -154,6 +169,7 @@ pub async fn run(which: &str) -> Result<(), Err> {
             }
         }
         if ids.is_empty() { Ok::<_, Report>(None) } else { Ok(Some(ids)) }
+        }
     };
     let ext: ExtensionsBehaviorSelection<ExtCb> =
         ExtensionsBehaviorSelection::Fixed(ExtensionsBehavior::RegisterAll);
@@ -164,12 +180,24 @@ pub async fn run(which: &str) -> Result<(), Err> {
         .extensions_behavior(ext)
         .delete_app_after_install(false)
         .build();
+    let ui4 = ui.clone();
+    let last4 = Arc::new(AtomicU64::new(0));
     let (signed, _special) = sideloader
         .sign_app(
             ipa.clone(),
             Some(team),
             false,
-            Some(|p: f32| async move { println!("  signing {:.0}%", p * 100.0) }),
+            Some(move |p: f32| {
+                let ui = ui4.clone();
+                let last = last4.clone();
+                async move {
+                    let pct = (p * 100.0) as u64;
+                    if pct >= last.load(Ordering::Relaxed) + 20 || pct == 100 {
+                        last.store(pct, Ordering::Relaxed);
+                        ui.log(format!("  signing {pct}%"));
+                    }
+                }
+            }),
             Some(&pairing_bytes),
             Some(&udid),
         )
@@ -177,12 +205,18 @@ pub async fn run(which: &str) -> Result<(), Err> {
         .map_err(e)?;
 
     // 6. Install.
-    println!("== Installing ==");
+    ui.log(format!("== Installing =="));
+    let ui5 = ui.clone();
+    let last5 = AtomicU64::new(0);
     isideload::sideload::install::install_app_rsd(&mut handle, &mut handshake, &signed, |p| {
-        println!("  installing {p}%")
+        let last = last5.load(Ordering::Relaxed);
+        if p >= last + 10 || p == 100 {
+            last5.store(p, Ordering::Relaxed);
+            ui5.log(format!("  installing {p}%"));
+        }
     })
     .await
     .map_err(e)?;
-    println!("\nDone. Open Settings > General > VPN & Device Management and trust your Apple ID if {name} won't open.");
+    ui.log(format!("Done. Open Settings > General > VPN & Device Management and trust your Apple ID if {name} won't open."));
     Ok(())
 }

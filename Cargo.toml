@@ -7,6 +7,7 @@ edition = "2021"
 idevice = { version = "0.1.68", default-features = false, features = ["remote_pairing", "ring", "tcp", "tunnel_tcp_stack", "rsd", "xpc", "afc", "installation_proxy"] }
 isideload = { version = "0.5.2", default-features = false, features = ["install", "fs-storage", "tokio-mt"] }
 rootcause = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process", "fs", "io-util"] }
 
 [profile.release]
