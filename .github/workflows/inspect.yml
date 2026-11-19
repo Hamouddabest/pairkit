@@ -15,15 +15,12 @@ jobs:
           cargo fetch
           d=$(ls -d ~/.cargo/registry/src/*/isideload-* | head -1)
           echo "DIR=$d"
-          for f in src/sideload/mod.rs src/dev/developer_session.rs; do
-            echo "=== isideload/$f ==="; cat "$d/$f"
-          done
-          grep -n "pub struct TwoFactorCallback\|pub enum TwoFactorCallback\|pub async fn login\|pub async fn get_developer_session\|fn get_dev" "$d/src/auth/apple_account.rs"
-          echo "=== isideload two-factor types ==="; grep -n -B2 -A12 "TwoFactorCallbackParams\|TwoFactorCallbackResponse" "$d/src/auth/apple_account.rs" | head -120
+          d=$(ls -d ~/.cargo/registry/src/*/isideload-* | head -1)
           i=$(ls -d ~/.cargo/registry/src/*/idevice-0.1.* | sort -V | tail -1)
-          echo "IDEVICE=$i"
-          echo "=== idevice files ==="; (cd "$i" && find . -name '*.rs' | sort | head -150)
-          for f in src/remote_pairing/mod.rs src/remote_pairing/tunnel.rs src/provider.rs src/rsd.rs; do
-            echo "=== idevice/$f ==="; cat "$i/$f"
-          done
-          echo "=== idevice examples ==="; (cd "$i" && ls examples 2>/dev/null; ls ../ | head -0)
+          for f in src/sideload/mod.rs src/auth/mod.rs src/dev/mod.rs; do echo "=== isideload/$f ==="; cat "$d/$f"; done
+          echo "=== isideload apple_account pub items ==="; grep -n "pub \(async \)\?fn\|pub struct\|pub enum" "$d/src/auth/apple_account.rs"
+          echo "=== isideload TwoFactor types ==="; sed -n 55,110p "$d/src/auth/apple_account.rs"
+          echo "=== isideload sideload_app ==="; grep -rn "pub async fn sideload_app\|pub async fn install_app\|pub async fn sign_app" "$d/src"
+          for f in src/tunnel.rs src/tcp/mod.rs src/services/rsd.rs src/remote_pairing/rp_pairing_file.rs; do echo "=== idevice/$f ==="; cat "$i/$f"; done
+          echo "=== idevice tcp dir ==="; ls "$i/src/tcp"
+          echo "=== jktcp ==="; j=$(ls -d ~/.cargo/registry/src/*/jktcp-* | sort -V | tail -1); echo $j; ls $j/src; grep -n "pub \(async \)\?fn\|pub struct" $j/src/*.rs | head -60
