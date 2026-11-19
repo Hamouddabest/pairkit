@@ -15,6 +15,15 @@ jobs:
           cargo fetch
           d=$(ls -d ~/.cargo/registry/src/*/isideload-* | head -1)
           echo "DIR=$d"
-          for f in src/auth/builder.rs src/auth/apple_account.rs src/sideload/builder.rs src/sideload/sideloader.rs src/sideload/install.rs src/util/callbacks.rs src/util/device.rs src/util/storage.rs src/util/fs_storage.rs src/anisette/mod.rs src/anisette/remote_v3/mod.rs src/dev/teams.rs src/dev/certificates.rs src/sideload/cert_identity.rs; do
-            echo "=== $f ==="; cat "$d/$f"
+          for f in src/sideload/mod.rs src/dev/developer_session.rs; do
+            echo "=== isideload/$f ==="; cat "$d/$f"
           done
+          grep -n "pub struct TwoFactorCallback\|pub enum TwoFactorCallback\|pub async fn login\|pub async fn get_developer_session\|fn get_dev" "$d/src/auth/apple_account.rs"
+          echo "=== isideload two-factor types ==="; grep -n -B2 -A12 "TwoFactorCallbackParams\|TwoFactorCallbackResponse" "$d/src/auth/apple_account.rs" | head -120
+          i=$(ls -d ~/.cargo/registry/src/*/idevice-0.1.* | sort -V | tail -1)
+          echo "IDEVICE=$i"
+          echo "=== idevice files ==="; (cd "$i" && find . -name '*.rs' | sort | head -150)
+          for f in src/remote_pairing/mod.rs src/remote_pairing/tunnel.rs src/provider.rs src/rsd.rs; do
+            echo "=== idevice/$f ==="; cat "$i/$f"
+          done
+          echo "=== idevice examples ==="; (cd "$i" && ls examples 2>/dev/null; ls ../ | head -0)
