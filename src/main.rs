@@ -36,6 +36,35 @@ fn silence_wav(seconds: u32) -> Vec<u8> {
     v
 }
 
+// Copies the pairing file (XML plist text) to the iOS clipboard through Open Minis's
+// `apple-clipboard set`, which reads from stdin.
+async fn export_to_clipboard(bytes: &[u8]) {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    let child = Command::new("apple-clipboard")
+        .arg("set")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    match child {
+        Ok(mut c) => {
+            if let Some(mut stdin) = c.stdin.take() {
+                let _ = stdin.write_all(bytes).await;
+            }
+            match c.wait().await {
+                Ok(st) if st.success() => {
+                    println!("\nCopied to your clipboard. Paste it into Notes or a Files text file,");
+                    println!("and save it as rp_pairing_file.plist.");
+                }
+                _ => println!("\nCould not copy to the clipboard. Run: apple-clipboard set < ~/.pairkit/rp_pairing_file.plist"),
+            }
+        }
+        Err(_) => println!("\napple-clipboard not found. The file is saved in ~/.pairkit"),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
@@ -123,8 +152,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(_peer) => {
                 // `to_bytes` is a guess at idevice's serializer name.
                 let bytes = pairing_file.to_bytes();
-                tokio::fs::write(&out_path, bytes).await?;
+                tokio::fs::write(&out_path, &bytes).await?;
                 println!("Paired. Pairing file saved to {}", out_path.display());
+                export_to_clipboard(&bytes).await;
                 result = Ok(());
                 break;
             }
