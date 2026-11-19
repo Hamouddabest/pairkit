@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# NOTE: the feature name below is a best guess. If the build says the feature
-# doesn't exist, paste the error back and it will be fixed.
-idevice = { version = "0.1.64", default-features = false, features = ["remote_pairing"] }
+# "ring" turns on rustls with the ring crypto backend. The build failed without a TLS
+# feature, because idevice's code needs one.
+idevice = { version = "0.1.64", default-features = false, features = ["remote_pairing", "ring"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process", "fs", "io-util"] }
 
 [profile.release]
