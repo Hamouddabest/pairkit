@@ -1,0 +1,22 @@
+name: Inspect isideload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Fetch isideload source
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo new probe && cd probe
+          cargo add isideload@0.5.2 || cargo add isideload
+          cargo fetch
+          d=$(ls -d ~/.cargo/registry/src/*/isideload-* | head -1)
+          echo "DIR=$d"
+          echo "=== Cargo.toml ==="; cat "$d/Cargo.toml"
+          echo "=== README ==="; cat "$d/README.md"
+          echo "=== FILES ==="; (cd "$d" && find . -name '*.rs' | sort)
+          echo "=== EXAMPLES ==="; (cd "$d" && for f in $(find examples -name '*.rs' 2>/dev/null); do echo "--- $f"; cat "$f"; done)
+          echo "=== lib.rs ==="; cat "$d/src/lib.rs"
