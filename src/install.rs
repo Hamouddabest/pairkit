@@ -19,6 +19,8 @@ use isideload::auth::apple_account::{
 use isideload::auth::builder::AppleAccountBuilder;
 use isideload::dev::certificates::DevelopmentCertificate;
 use isideload::dev::developer_session::DeveloperSession;
+use isideload::dev::certificates::CertificatesApi;
+use isideload::dev::device_type::DeveloperDeviceType;
 use isideload::dev::devices::DevicesApi;
 use isideload::dev::teams::TeamsApi;
 use isideload::sideload::builder::{ExtensionsBehavior, ExtensionsBehaviorSelection, MaxCertsBehavior, SideloaderBuilder};
@@ -38,6 +40,15 @@ fn home_dir() -> PathBuf {
 
 fn e<T: std::fmt::Debug>(x: T) -> Err {
     format!("{x:?}").into()
+}
+
+async fn ask_choice(ui: &Arc<Ui>) -> String {
+    loop {
+        let a = ui.ask("Type 1 to USE the saved certificate, or 2 to REVOKE and make a new one", false).await;
+        if a == "1" || a == "2" {
+            return a;
+        }
+    }
 }
 
 type ExtCb = fn(&[Bundle]) -> std::future::Ready<Result<ExtensionsBehavior, Report>>;
@@ -148,6 +159,43 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
 
     // 5. Sign. Reuses the certificate pairkit made before; if your account is full, it asks
     //    which certificate to revoke (an old certificate can't be reused without its private key).
+    ui.log(format!("== Certificate =="));
+    let certs = dev_session.list_ios_certs(&team).await.map_err(e)?;
+    let keys_dir = dir.join("keys");
+    if certs.is_empty() {
+        ui.log("No certificate on your account yet; a new one will be made.");
+    } else {
+        ui.log("Certificates on your Apple ID:");
+        for (i, c) in certs.iter().enumerate() {
+            ui.log(format!("  {}: {} ({})", i + 1, c.name.clone().unwrap_or_default(), c.machine_name.clone().unwrap_or_default()));
+        }
+        ui.log("Note: a certificate can only be reused if pairkit made it earlier (it needs the saved key).");
+        let a = ask_choice(&ui).await;
+        if a == "2" {
+            let which = ui.ask("Which to revoke? Numbers like 1 or 1,2, or type all", false).await;
+            let mut serials = Vec::new();
+            for part in which.split(',') {
+                let part = part.trim();
+                if part.eq_ignore_ascii_case("all") {
+                    serials = certs.iter().filter_map(|c| c.serial_number.clone()).collect();
+                    break;
+                }
+                if let Ok(n) = part.parse::<usize>() {
+                    if let Some(sn) = certs.get(n.wrapping_sub(1)).and_then(|c| c.serial_number.clone()) {
+                        serials.push(sn);
+                    }
+                }
+            }
+            for sn in &serials {
+                dev_session.revoke_development_cert(&team, sn, DeveloperDeviceType::Ios).await.map_err(e)?;
+                ui.log(format!("Revoked certificate {sn}"));
+            }
+            let _ = tokio::fs::remove_dir_all(&keys_dir).await;
+            ui.log("A new certificate will be made.");
+        } else {
+            ui.log("Reusing the saved certificate if it matches.");
+        }
+    }
     ui.log(format!("== Signing =="));
     let ui3 = ui.clone();
     let max_certs = move |certs: Vec<DevelopmentCertificate>| {
