@@ -240,7 +240,9 @@ final class Engine: NSObject, ObservableObject {
                     }
                 }
                 await MainActor.run { self.progress = 0.3; self.stage = "Preparing" }
-                let opts = "{\"cert_mode\":\"\(certMode)\",\"reuse_main_ext\":\(reuseExt)}"
+                let optsObj: [String: Any] = ["cert_mode": certMode, "reuse_main_ext": reuseExt, "anisette": Anisette.tryOrder()]
+                let optsData = (try? JSONSerialization.data(withJSONObject: optsObj)) ?? Data("{}".utf8)
+                let opts = String(data: optsData, encoding: .utf8) ?? "{}"
                 let err: String? = await withCheckedContinuation { cont in
                     DispatchQueue.global(qos: .userInitiated).async {
                         let r = pk_install(ipa.path, opts, logCB, askCB, self.ctx)

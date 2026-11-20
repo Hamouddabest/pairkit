@@ -41,6 +41,22 @@ struct SettingsView: View {
                         Text("The password and codes are never saved.").font(.caption).foregroundColor(.white.opacity(0.55))
                     }
 
+                    section("Sign-in") {
+                        NavigationLink {
+                            AnisetteView()
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Anisette servers").foregroundColor(.white)
+                                    Text("Fix \"failed to login\": change or add servers")
+                                        .font(.caption).foregroundColor(.white.opacity(0.55))
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").foregroundColor(.white.opacity(0.4))
+                            }
+                        }
+                    }
+
                     section("Keep running") {
                         Toggle("Silent audio while pairing", isOn: $keepAwakeAudio)
                         Text("Stops iOS from freezing PairKit while you are in Settings.").font(.caption).foregroundColor(.white.opacity(0.55))

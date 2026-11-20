@@ -115,6 +115,12 @@ struct InstallView: View {
         }
     }
 
+    private var folderIPAs: [URL] {
+        let fm = FileManager.default
+        let items = (try? fm.contentsOfDirectory(at: engine.ipaDir, includingPropertiesForKeys: nil)) ?? []
+        return items.filter { $0.pathExtension.lowercased() == "ipa" && !["sidestore.ipa", "altstore.ipa", "livecontainer.ipa"].contains($0.lastPathComponent.lowercased()) }
+    }
+
     private var canInstall: Bool {
         if engine.busy || !engine.hasPairingFile { return false }
         if selected.id == "custom" { return pickedFile != nil || !customLink.trimmingCharacters(in: .whitespaces).isEmpty }

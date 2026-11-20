@@ -26,7 +26,7 @@ struct RootView: View {
                 .tabItem { Label("Install", systemImage: "arrow.down.app.fill") }
             LogView()
                 .tabItem { Label("Log", systemImage: "text.alignleft") }
-            SettingsView()
+            NavigationStack { SettingsView() }
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .sheet(item: $engine.prompt) { p in

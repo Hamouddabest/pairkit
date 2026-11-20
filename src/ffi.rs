@@ -167,6 +167,11 @@ pub extern "C" fn pk_install(ipa_path: *const c_char, opts_json: *const c_char, 
         ipa: Some(PathBuf::from(ipa)),
         cert_mode: v.get("cert_mode").and_then(|x| x.as_str()).unwrap_or("ask").to_string(),
         reuse_main_ext: v.get("reuse_main_ext").and_then(|x| x.as_bool()).unwrap_or(true),
+        anisette: v
+            .get("anisette")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(|s| s.trim().trim_end_matches('/').to_string())).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default(),
     };
 
     let ui = Arc::new(Ui::default());

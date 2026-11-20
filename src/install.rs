@@ -16,6 +16,7 @@ use idevice::tcp::adapter::Adapter;
 use isideload::auth::apple_account::{
     TwoFactorCallbackParams, TwoFactorCallbackResponse,
 };
+use isideload::anisette::remote_v3::RemoteV3AnisetteProvider;
 use isideload::auth::builder::AppleAccountBuilder;
 use isideload::dev::certificates::DevelopmentCertificate;
 use isideload::dev::developer_session::DeveloperSession;
@@ -119,11 +120,13 @@ pub struct Opts {
     pub cert_mode: String,
     /// true = extensions share the main app ID (uses fewer app IDs)
     pub reuse_main_ext: bool,
+    /// Anisette servers to try in order (empty = built-in default)
+    pub anisette: Vec<String>,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { ipa: None, cert_mode: "ask".into(), reuse_main_ext: true }
+        Opts { ipa: None, cert_mode: "ask".into(), reuse_main_ext: true, anisette: Vec::new() }
     }
 }
 
@@ -198,25 +201,65 @@ async fn run_inner(which: &str, ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
     let email = ui.ask("Apple ID email", false).await;
     let password = ui.ask("Apple ID password (not saved)", true).await;
 
-    let ui2 = ui.clone();
-    let two_factor = move |p: TwoFactorCallbackParams| {
-        let ui = ui2.clone();
-        async move {
-        if let Some(err) = &p.last_error {
-            ui.log(format!("2FA problem: {err}"));
-        }
-        let code = ui.ask("Enter the 6-digit Apple verification code (type r to resend)", false).await;
-        if code.eq_ignore_ascii_case("r") {
-            Ok(TwoFactorCallbackResponse::ResendCode)
-        } else if code.is_empty() {
-            Ok(TwoFactorCallbackResponse::Abort)
+    // Try each anisette server in turn (the app passes a list); an empty entry means the built-in default.
+    let servers: Vec<String> = if opts.anisette.is_empty() { vec![String::new()] } else { opts.anisette.clone() };
+    let mut account = None;
+    let mut last_err = String::new();
+    for url in servers.iter() {
+        let ui2 = ui.clone();
+        let two_factor = move |p: TwoFactorCallbackParams| {
+            let ui = ui2.clone();
+            async move {
+                if let Some(err) = &p.last_error {
+                    ui.log(format!("2FA problem: {err}"));
+                }
+                let code = ui.ask("Enter the 6-digit Apple verification code (type r to resend)", false).await;
+                if code.eq_ignore_ascii_case("r") {
+                    Ok(TwoFactorCallbackResponse::ResendCode)
+                } else if code.is_empty() {
+                    Ok(TwoFactorCallbackResponse::Abort)
+                } else {
+                    Ok::<_, Report>(TwoFactorCallbackResponse::SubmitCode(code))
+                }
+            }
+        };
+        let mut builder = AppleAccountBuilder::new(&email);
+        if url.is_empty() {
+            ui.log("Signing in...");
         } else {
-            Ok::<_, Report>(TwoFactorCallbackResponse::SubmitCode(code))
+            ui.log(format!("Signing in (anisette server {url})..."));
+            let tag: String = url.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+            let storage = FsStorage::new(dir.join("anisette").join(tag));
+            match RemoteV3AnisetteProvider::new(url, Box::new(storage), "0".to_string()) {
+                Ok(prov) => builder = builder.anisette_provider(prov),
+                Err(err) => {
+                    last_err = format!("{err:?}");
+                    ui.log(format!("Could not use that server: {last_err}"));
+                    continue;
+                }
+            }
         }
+        match builder.login(&password, two_factor).await {
+            Ok(a) => {
+                account = Some(a);
+                break;
+            }
+            Err(err) => {
+                last_err = format!("{err:?}");
+                let low = last_err.to_lowercase();
+                ui.log(format!("Sign-in failed: {}", last_err.lines().next().unwrap_or("")));
+                // Wrong password / cancelled: another server won't help.
+                if low.contains("incorrect") || low.contains("-20101") || low.contains("abort") {
+                    break;
+                }
+                ui.log("Trying the next anisette server...");
+            }
         }
+    }
+    let mut account = match account {
+        Some(a) => a,
+        None => return Err(format!("Could not sign in. {last_err}").into()),
     };
-    ui.log(format!("Signing in..."));
-    let mut account = AppleAccountBuilder::new(&email).login(&password, two_factor).await.map_err(e)?;
     let mut dev_session = DeveloperSession::from_account(&mut account).await.map_err(e)?;
     drop(password);
 
