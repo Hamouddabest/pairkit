@@ -48,3 +48,10 @@ You can skip the app question by naming it:
 - A certificate can only be reused if pairkit made it earlier (it needs the saved key).
 - Free Apple IDs have a small weekly app ID limit. Extensions reuse the main app's ID to save slots.
 - If you see a DNS / "Try again" error, switch between Wi-Fi and mobile data and rerun; signing retries automatically.
+
+## iPhone app (no terminal)
+The same thing as a native app, with pairing, app picker, download progress and settings built in.
+
+IPA: https://github.com/Hamouddabest/pairkit/releases/download/app/PairKit.ipa
+
+Install it with AltStore/SideStore (or any sideloader). Same rules: LocalDevVPN on, keep the app open while installing.
