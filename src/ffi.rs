@@ -196,3 +196,38 @@ pub extern "C" fn pk_install(ipa_path: *const c_char, opts_json: *const c_char, 
         Err(e) => cstr(&e.to_string()).into_raw(),
     }
 }
+
+/// Lists your app IDs and deletes the ones the app picks (see install::manage_app_ids).
+/// Returns null on success or an error message (free with pk_free).
+#[no_mangle]
+pub extern "C" fn pk_manage_app_ids(opts_json: *const c_char, log: LogCb, ask: AskCb, ctx: *mut c_void) -> *mut c_char {
+    let ctx = Ctx(ctx);
+    let opts_s = if opts_json.is_null() { "{}".to_string() } else { unsafe { CStr::from_ptr(opts_json) }.to_string_lossy().to_string() };
+    let v: serde_json::Value = serde_json::from_str(&opts_s).unwrap_or_default();
+    let anisette: Vec<String> = v
+        .get("anisette")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|s| s.as_str().map(|s| s.trim().trim_end_matches('/').to_string())).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let ui = Arc::new(Ui::default());
+    ui.set_hooks(
+        Arc::new(move |s: &str| {
+            let c = cstr(s);
+            log(c.as_ptr(), ctx.get());
+        }),
+        Arc::new(move |label: &str, secret: bool| {
+            let c = cstr(label);
+            let p = ask(c.as_ptr(), secret as i32, ctx.get());
+            if p.is_null() {
+                return String::new();
+            }
+            let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
+            unsafe { free(p as *mut c_void) };
+            s
+        }),
+    );
+    match rt().block_on(install::manage_app_ids(ui, anisette)) {
+        Ok(()) => std::ptr::null_mut(),
+        Err(e) => cstr(&e.to_string()).into_raw(),
+    }
+}

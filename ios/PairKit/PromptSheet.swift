@@ -12,6 +12,14 @@ struct PromptSheet: View {
     private var isEmail: Bool { req.label.hasPrefix("Apple ID email") }
 
     var body: some View {
+        if req.label.hasPrefix("APPIDS:") {
+            AppIDPicker(req: req)
+        } else {
+            promptBody
+        }
+    }
+
+    private var promptBody: some View {
         ZStack {
             Backdrop()
             VStack(alignment: .leading, spacing: 16) {

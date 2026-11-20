@@ -278,6 +278,43 @@ final class Engine: NSObject, ObservableObject {
         }
     }
 
+    // MARK: App IDs
+
+    func manageAppIDs() {
+        guard !busy else { return }
+        busy = true
+        resultMessage = nil
+        resultIsError = false
+        stage = "Managing app IDs"
+        log.removeAll()
+        let optsObj: [String: Any] = ["anisette": Anisette.tryOrder()]
+        let optsData = (try? JSONSerialization.data(withJSONObject: optsObj)) ?? Data("{}".utf8)
+        let opts = String(data: optsData, encoding: .utf8) ?? "{}"
+        Task {
+            let err: String? = await withCheckedContinuation { cont in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let r = pk_manage_app_ids(opts, logCB, askCB, self.ctx)
+                    if let r = r {
+                        let s = String(cString: r)
+                        pk_free(r)
+                        cont.resume(returning: s)
+                    } else {
+                        cont.resume(returning: nil)
+                    }
+                }
+            }
+            await MainActor.run {
+                self.busy = false
+                if let err = err {
+                    self.resultIsError = true
+                    self.resultMessage = err
+                } else {
+                    self.resultMessage = "Finished."
+                }
+            }
+        }
+    }
+
     // MARK: Housekeeping
 
     func deletePairingFile() {

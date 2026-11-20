@@ -20,6 +20,7 @@ use isideload::anisette::remote_v3::RemoteV3AnisetteProvider;
 use isideload::auth::builder::AppleAccountBuilder;
 use isideload::dev::certificates::DevelopmentCertificate;
 use isideload::dev::developer_session::DeveloperSession;
+use isideload::dev::app_ids::AppIdsApi;
 use isideload::dev::certificates::CertificatesApi;
 use isideload::dev::device_type::DeveloperDeviceType;
 use isideload::dev::devices::DevicesApi;
@@ -107,6 +108,122 @@ async fn altstore_ipa() -> Option<String> {
         }
     }
     Some("https://cdn.altstore.io/file/altstore/altstore.ipa".to_string())
+}
+
+
+/// Asks for the Apple ID and password, then signs in, trying each anisette server in turn.
+async fn apple_login(ui: &Arc<Ui>, dir: &std::path::Path, anisette: &[String]) -> Result<(String, DeveloperSession), Err> {
+    let opts_anisette = anisette.to_vec();
+    let ui = ui.clone();
+    ui.log(format!("== Apple ID =="));
+    let email = ui.ask("Apple ID email", false).await;
+    let password = ui.ask("Apple ID password (not saved)", true).await;
+
+    // Try each anisette server in turn (the app passes a list); an empty entry means the built-in default.
+    let servers: Vec<String> = if opts_anisette.is_empty() { vec![String::new()] } else { opts_anisette.clone() };
+    let mut account = None;
+    let mut last_err = String::new();
+    for url in servers.iter() {
+        let ui2 = ui.clone();
+        let two_factor = move |p: TwoFactorCallbackParams| {
+            let ui = ui2.clone();
+            async move {
+                if let Some(err) = &p.last_error {
+                    ui.log(format!("2FA problem: {err}"));
+                }
+                let code = ui.ask("Enter the 6-digit Apple verification code (type r to resend)", false).await;
+                if code.eq_ignore_ascii_case("r") {
+                    Ok(TwoFactorCallbackResponse::ResendCode)
+                } else if code.is_empty() {
+                    Ok(TwoFactorCallbackResponse::Abort)
+                } else {
+                    Ok::<_, Report>(TwoFactorCallbackResponse::SubmitCode(code))
+                }
+            }
+        };
+        let mut builder = AppleAccountBuilder::new(&email);
+        if url.is_empty() {
+            ui.log("Signing in...");
+        } else {
+            ui.log(format!("Signing in (anisette server {url})..."));
+            let tag: String = url.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+            let storage = FsStorage::new(dir.join("anisette").join(tag));
+            match RemoteV3AnisetteProvider::new(url, Box::new(storage), "0".to_string()) {
+                Ok(prov) => builder = builder.anisette_provider(prov),
+                Err(err) => {
+                    last_err = format!("{err:?}");
+                    ui.log(format!("Could not use that server: {last_err}"));
+                    continue;
+                }
+            }
+        }
+        match builder.login(&password, two_factor).await {
+            Ok(a) => {
+                account = Some(a);
+                break;
+            }
+            Err(err) => {
+                last_err = format!("{err:?}");
+                let low = last_err.to_lowercase();
+                ui.log(format!("Sign-in failed: {}", last_err.lines().next().unwrap_or("")));
+                // Wrong password / cancelled: another server won't help.
+                if low.contains("incorrect") || low.contains("-20101") || low.contains("abort") {
+                    break;
+                }
+                ui.log("Trying the next anisette server...");
+            }
+        }
+    }
+    let mut account = match account {
+        Some(a) => a,
+        None => return Err(format!("Could not sign in. {last_err}").into()),
+    };
+    let dev_session = DeveloperSession::from_account(&mut account).await.map_err(e)?;
+    drop(password);
+    Ok((email, dev_session))
+}
+
+/// Signs in, shows your app IDs (the app answers with the ones to delete) and deletes them.
+/// The question label is `APPIDS:<json>`; the answer is a comma-separated list of app ID ids, or empty to finish.
+pub async fn manage_app_ids(ui: Arc<Ui>, anisette: Vec<String>) -> Result<(), Err> {
+    let dir = home_dir().join(".pairkit");
+    tokio::fs::create_dir_all(&dir).await?;
+    let (_email, mut dev) = apple_login(&ui, &dir, &anisette).await?;
+    let teams = dev.list_teams().await.map_err(e)?;
+    let team = teams.into_iter().next().ok_or("No developer team on this Apple ID")?;
+    loop {
+        let resp = dev.list_app_ids(&team, DeveloperDeviceType::Ios).await.map_err(e)?;
+        let ids: Vec<serde_json::Value> = resp
+            .app_ids
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "id": a.app_id_id,
+                    "identifier": a.identifier,
+                    "name": a.name,
+                    "expires": a.expiration_date.map(|d| d.to_xml_format()),
+                })
+            })
+            .collect();
+        let json = serde_json::json!({
+            "max": resp.max_quantity,
+            "available": resp.available_quantity,
+            "ids": ids,
+        })
+        .to_string();
+        let answer = ui.ask(&format!("APPIDS:{json}"), false).await;
+        let picked: Vec<String> = answer.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+        if picked.is_empty() {
+            break;
+        }
+        for id in picked {
+            match dev.delete_app_id(&team, &id, DeveloperDeviceType::Ios).await {
+                Ok(()) => ui.log(format!("Deleted app ID {id}")),
+                Err(err) => ui.log(format!("Could not delete {id}: {}", format!("{err:?}").lines().next().unwrap_or(""))),
+            }
+        }
+    }
+    Ok(())
 }
 
 type ExtCb = fn(&[Bundle]) -> std::future::Ready<Result<ExtensionsBehavior, Report>>;
@@ -197,71 +314,7 @@ async fn run_inner(which: &str, ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
     ui.set_pairing(pairing_bytes.clone());
 
     // 1. Apple ID first, so you can see problems before the tunnel work.
-    ui.log(format!("== Apple ID =="));
-    let email = ui.ask("Apple ID email", false).await;
-    let password = ui.ask("Apple ID password (not saved)", true).await;
-
-    // Try each anisette server in turn (the app passes a list); an empty entry means the built-in default.
-    let servers: Vec<String> = if opts.anisette.is_empty() { vec![String::new()] } else { opts.anisette.clone() };
-    let mut account = None;
-    let mut last_err = String::new();
-    for url in servers.iter() {
-        let ui2 = ui.clone();
-        let two_factor = move |p: TwoFactorCallbackParams| {
-            let ui = ui2.clone();
-            async move {
-                if let Some(err) = &p.last_error {
-                    ui.log(format!("2FA problem: {err}"));
-                }
-                let code = ui.ask("Enter the 6-digit Apple verification code (type r to resend)", false).await;
-                if code.eq_ignore_ascii_case("r") {
-                    Ok(TwoFactorCallbackResponse::ResendCode)
-                } else if code.is_empty() {
-                    Ok(TwoFactorCallbackResponse::Abort)
-                } else {
-                    Ok::<_, Report>(TwoFactorCallbackResponse::SubmitCode(code))
-                }
-            }
-        };
-        let mut builder = AppleAccountBuilder::new(&email);
-        if url.is_empty() {
-            ui.log("Signing in...");
-        } else {
-            ui.log(format!("Signing in (anisette server {url})..."));
-            let tag: String = url.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-            let storage = FsStorage::new(dir.join("anisette").join(tag));
-            match RemoteV3AnisetteProvider::new(url, Box::new(storage), "0".to_string()) {
-                Ok(prov) => builder = builder.anisette_provider(prov),
-                Err(err) => {
-                    last_err = format!("{err:?}");
-                    ui.log(format!("Could not use that server: {last_err}"));
-                    continue;
-                }
-            }
-        }
-        match builder.login(&password, two_factor).await {
-            Ok(a) => {
-                account = Some(a);
-                break;
-            }
-            Err(err) => {
-                last_err = format!("{err:?}");
-                let low = last_err.to_lowercase();
-                ui.log(format!("Sign-in failed: {}", last_err.lines().next().unwrap_or("")));
-                // Wrong password / cancelled: another server won't help.
-                if low.contains("incorrect") || low.contains("-20101") || low.contains("abort") {
-                    break;
-                }
-                ui.log("Trying the next anisette server...");
-            }
-        }
-    }
-    let mut account = match account {
-        Some(a) => a,
-        None => return Err(format!("Could not sign in. {last_err}").into()),
-    };
-    let mut dev_session = DeveloperSession::from_account(&mut account).await.map_err(e)?;
-    drop(password);
+    let (email, mut dev_session) = apple_login(&ui, &dir, &opts.anisette).await?;
 
     // 2. Tunnel to the phone.
     ui.log(format!("== Connecting to this iPhone (LocalDevVPN must be ON) =="));
