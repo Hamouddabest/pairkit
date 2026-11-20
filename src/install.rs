@@ -220,7 +220,7 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
         }
     };
     let ext: ExtensionsBehaviorSelection<ExtCb> =
-        ExtensionsBehaviorSelection::Fixed(ExtensionsBehavior::RegisterAll);
+        ExtensionsBehaviorSelection::Fixed(ExtensionsBehavior::ReuseMain);
     let mut sideloader = SideloaderBuilder::new(dev_session, email.clone())
         .storage(Box::new(FsStorage::new(dir.join("keys"))))
         .machine_name("pairkit".to_string())
