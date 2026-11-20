@@ -1,6 +1,5 @@
 import SwiftUI
 
-@main
 struct PairKitApp: App {
     @StateObject private var engine = Engine.shared
     @AppStorage("accent") private var accent = 0
@@ -24,6 +23,8 @@ struct RootView: View {
                 .tabItem { Label("Pair", systemImage: "link") }
             InstallView()
                 .tabItem { Label("Install", systemImage: "arrow.down.app.fill") }
+            ContainersView()
+                .tabItem { Label("Containers", systemImage: "shippingbox.fill") }
             LogView()
                 .tabItem { Label("Log", systemImage: "text.alignleft") }
             NavigationStack { SettingsView() }

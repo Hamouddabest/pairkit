@@ -76,6 +76,13 @@ private let askCB: @convention(c) (UnsafePointer<CChar>?, Int32, UnsafeMutableRa
 
 // MARK: - Engine
 
+struct GuestApp: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let bundleID: String
+    let dir: URL
+}
+
 final class Engine: NSObject, ObservableObject {
     static let shared = Engine()
 
@@ -88,6 +95,8 @@ final class Engine: NSObject, ObservableObject {
     @Published var progress: Double = 0
     @Published var resultMessage: String?
     @Published var resultIsError = false
+    @Published var guests: [GuestApp] = []
+    @Published var launchLog = ""
 
     private var service: NetService?
     private var player: AVAudioPlayer?
@@ -99,6 +108,7 @@ final class Engine: NSObject, ObservableObject {
         // The Rust side stores everything under $HOME/.pairkit
         setenv("HOME", docs.path, 1)
         refreshPairingFile()
+        refreshGuests()
     }
 
     var pairkitDir: URL { docs.appendingPathComponent(".pairkit") }
@@ -276,6 +286,101 @@ final class Engine: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: Containers (apps that run inside PairKit)
+
+    var containersDir: URL { docs.appendingPathComponent("Containers") }
+
+    func refreshGuests() {
+        let fm = FileManager.default
+        let dirs = (try? fm.contentsOfDirectory(at: containersDir, includingPropertiesForKeys: nil)) ?? []
+        var out: [GuestApp] = []
+        for d in dirs {
+            let plist = d.appendingPathComponent("App.app/Info.plist")
+            guard let info = NSDictionary(contentsOf: plist) as? [String: Any] else { continue }
+            let name = (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? d.lastPathComponent
+            let bid = (info["PKGuestOriginalBundleID"] as? String) ?? (info["CFBundleIdentifier"] as? String) ?? ""
+            out.append(GuestApp(id: d.lastPathComponent, name: name, bundleID: bid, dir: d))
+        }
+        guests = out.sorted { $0.name < $1.name }
+        launchLog = (try? String(contentsOf: pairkitDir.appendingPathComponent("launch_log.txt"))) ?? ""
+    }
+
+    func addGuest(link: String) {
+        guard !busy else { return }
+        busy = true
+        resultMessage = nil
+        resultIsError = false
+        progress = 0
+        stage = "Starting"
+        log.removeAll()
+        let hostID = Bundle.main.bundleIdentifier ?? "com.hamoud.pairkit"
+        let optsObj: [String: Any] = ["anisette": Anisette.tryOrder()]
+        let optsData = (try? JSONSerialization.data(withJSONObject: optsObj)) ?? Data("{}".utf8)
+        let opts = String(data: optsData, encoding: .utf8) ?? "{}"
+        Task {
+            do {
+                try FileManager.default.createDirectory(at: ipaDir, withIntermediateDirectories: true)
+                guard let url = URL(string: link.trimmingCharacters(in: .whitespaces)), url.scheme?.hasPrefix("http") == true else {
+                    throw Resolver.Failure(errorDescription: "That isn't a valid link.")
+                }
+                await MainActor.run { self.stage = "Downloading" }
+                let tmp = ipaDir.appendingPathComponent("guest_download.ipa")
+                let ipa = try await Downloader().download(url, to: tmp) { p in
+                    DispatchQueue.main.async { self.progress = p * 0.3 }
+                }
+                let dest = containersDir.appendingPathComponent(UUID().uuidString)
+                try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+                await MainActor.run { self.progress = 0.3; self.stage = "Signing" }
+                let err: String? = await withCheckedContinuation { cont in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let r = pk_sign_guest(ipa.path, dest.path, hostID, opts, logCB, askCB, self.ctx)
+                        if let r = r {
+                            let s = String(cString: r)
+                            pk_free(r)
+                            cont.resume(returning: s)
+                        } else {
+                            cont.resume(returning: nil)
+                        }
+                    }
+                }
+                await MainActor.run {
+                    self.busy = false
+                    if let err = err {
+                        try? FileManager.default.removeItem(at: dest)
+                        self.resultIsError = true
+                        self.resultMessage = err
+                    } else {
+                        self.progress = 1
+                        self.resultMessage = "Added. Tap Launch to run it."
+                    }
+                    self.refreshGuests()
+                }
+            } catch {
+                await MainActor.run {
+                    self.busy = false
+                    self.resultIsError = true
+                    self.resultMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func launch(_ g: GuestApp) {
+        try? FileManager.default.createDirectory(at: pairkitDir, withIntermediateDirectories: true)
+        try? g.dir.path.write(to: pairkitDir.appendingPathComponent("launch.txt"), atomically: true, encoding: .utf8)
+        try? FileManager.default.removeItem(at: pairkitDir.appendingPathComponent("launch_log.txt"))
+        resultIsError = false
+        resultMessage = "Restarting PairKit to open \(g.name). If nothing happens, open PairKit again yourself."
+        // Ask iOS to reopen PairKit, then quit so it starts fresh as the guest.
+        if let u = URL(string: "pairkit://run") { UIApplication.shared.open(u) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { exit(0) }
+    }
+
+    func deleteGuest(_ g: GuestApp) {
+        try? FileManager.default.removeItem(at: g.dir)
+        refreshGuests()
     }
 
     // MARK: App IDs

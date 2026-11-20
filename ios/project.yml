@@ -23,6 +23,9 @@ targets:
         NSLocalNetworkUsageDescription: PairKit pairs this iPhone with itself and talks to it over your local VPN to install apps.
         NSBonjourServices: ["_remotepairing-pairable-host._tcp"]
         UIBackgroundModes: [audio]
+        CFBundleURLTypes:
+          - CFBundleURLName: com.hamoud.pairkit
+            CFBundleURLSchemes: [pairkit]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
     settings:
