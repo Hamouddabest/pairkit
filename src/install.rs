@@ -229,29 +229,45 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
         .extensions_behavior(ext)
         .delete_app_after_install(false)
         .build();
-    let ui4 = ui.clone();
-    let last4 = Arc::new(AtomicU64::new(0));
-    let (signed, _special) = sideloader
-        .sign_app(
-            ipa.clone(),
-            Some(team),
-            false,
-            Some(move |p: f32| {
-                let ui = ui4.clone();
-                let last = last4.clone();
-                async move {
-                    let pct = (p * 100.0) as u64;
-                    if pct >= last.load(Ordering::Relaxed) + 20 || pct == 100 {
-                        last.store(pct, Ordering::Relaxed);
-                        ui.log(format!("  signing {pct}%"));
+    let mut attempt = 0;
+    let (signed, _special) = loop {
+        attempt += 1;
+        let ui4 = ui.clone();
+        let last4 = Arc::new(AtomicU64::new(0));
+        let res = sideloader
+            .sign_app(
+                ipa.clone(),
+                Some(team.clone()),
+                false,
+                Some(move |p: f32| {
+                    let ui = ui4.clone();
+                    let last = last4.clone();
+                    async move {
+                        let pct = (p * 100.0) as u64;
+                        if pct >= last.load(Ordering::Relaxed) + 20 || pct == 100 {
+                            last.store(pct, Ordering::Relaxed);
+                            ui.log(format!("  signing {pct}%"));
+                        }
                     }
+                }),
+                Some(&pairing_bytes),
+                Some(&udid),
+            )
+            .await;
+        match res {
+            Ok(v) => break v,
+            Err(err) => {
+                let msg = format!("{err:?}");
+                let net = msg.contains("dns error") || msg.contains("Try again") || msg.contains("Connect");
+                if net && attempt < 5 {
+                    ui.log(format!("Network hiccup talking to Apple (try {attempt}/5). Retrying in 5s..."));
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
                 }
-            }),
-            Some(&pairing_bytes),
-            Some(&udid),
-        )
-        .await
-        .map_err(e)?;
+                return Err(e(msg));
+            }
+        }
+    };
 
     // 6. Install.
     ui.log(format!("== Installing =="));
