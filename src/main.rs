@@ -76,6 +76,7 @@ async fn main() {
             println!("pairkit            pair this iPhone with itself and copy the pairing file");
             println!("pairkit install   sign in with your Apple ID, then pick SideStore / AltStore / LiveContainer / custom IPA");
             println!("pairkit install altstore    same, for AltStore");
+            println!("pairkit install pairkit     install the PairKit iPhone app itself");
             Ok(())
         }
         _ => run().await,

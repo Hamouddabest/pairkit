@@ -36,6 +36,12 @@ A web page opens (or a `127.0.0.1` link is printed - tap it). On the page:
 3. If your Apple ID already has certificates, choose **1** to reuse the saved one or **2** to revoke and make a new one.
 4. Use the **Export pairing file** button to save a copy of the pairing file (share sheet / Files), or copy its text.
 
+Install the PairKit iPhone app itself (no other sideloader needed):
+
+```
+./pairkit install pairkit
+```
+
 You can skip the app question by naming it:
 
 ```

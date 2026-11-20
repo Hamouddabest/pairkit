@@ -458,15 +458,16 @@ pub async fn run_with(ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
 async fn run_inner(which: &str, ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
     let preset = opts.ipa.clone();
     let choice = match which {
-        _ if preset.is_some() => "5".to_string(),
+        _ if preset.is_some() => "P".to_string(),
         "sidestore" => "1".to_string(),
         "altstore" => "2".to_string(),
         "livecontainer" => "3".to_string(),
+        "pairkit" => "5".to_string(),
         _ => loop {
             let a = ui
-                .ask("Which app? Type 1 = SideStore, 2 = AltStore, 3 = LiveContainer, 4 = custom IPA", false)
+                .ask("Which app? Type 1 = SideStore, 2 = AltStore, 3 = LiveContainer, 4 = custom IPA, 5 = PairKit app", false)
                 .await;
-            if ["1", "2", "3", "4"].contains(&a.as_str()) {
+            if ["1", "2", "3", "4", "5"].contains(&a.as_str()) {
                 break a;
             }
         },
@@ -479,6 +480,7 @@ async fn run_inner(which: &str, ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
         "1" => "SideStore",
         "2" => "AltStore",
         "3" => "LiveContainer",
+        "5" => "PairKit",
         _ => "CustomApp",
     }
     .to_string();
@@ -535,10 +537,10 @@ async fn run_inner(which: &str, ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
 
     // 4. Download the app.
     let ipa = preset.clone().unwrap_or_else(|| dir.join(format!("{name}.ipa")));
-    if choice != "5" {
+    if choice != "P" {
         ui.log(format!("== Downloading the latest {name} =="));
     }
-    if choice == "5" {
+    if choice == "P" {
         // already downloaded by the app
     } else if choice == "4" && !custom.starts_with("http") {
         tokio::fs::copy(&custom, &ipa).await.map_err(|x| format!("Can't read {custom}: {x}"))?;
@@ -547,6 +549,7 @@ async fn run_inner(which: &str, ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
             "1" => github_ipa("SideStore/SideStore", "SideStore.ipa").await,
             "2" => altstore_ipa().await,
             "3" => github_ipa("LiveContainer/LiveContainer", "LiveContainer.ipa").await,
+            "5" => Some("https://github.com/Hamouddabest/pairkit/releases/download/app/PairKit.ipa".to_string()),
             _ => Some(custom.clone()),
         };
         let url = match url {
