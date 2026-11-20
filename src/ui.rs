@@ -20,10 +20,20 @@ struct St {
     pairing: Vec<u8>,
 }
 
+type LogHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+type AskHook = std::sync::Arc<dyn Fn(&str, bool) -> String + Send + Sync>;
+
+#[derive(Default)]
+struct Hooks {
+    log: Option<LogHook>,
+    ask: Option<AskHook>,
+}
+
 #[derive(Default)]
 pub struct Ui {
     st: Mutex<St>,
     notify: Notify,
+    hooks: Mutex<Hooks>,
 }
 
 fn esc(s: &str) -> String {
@@ -42,8 +52,20 @@ fn esc(s: &str) -> String {
 }
 
 impl Ui {
+    /// Used by the iOS app: log lines and questions go to native callbacks instead of the web page.
+    pub fn set_hooks(&self, log: LogHook, ask: AskHook) {
+        let mut h = self.hooks.lock().unwrap();
+        h.log = Some(log);
+        h.ask = Some(ask);
+    }
+
     pub fn log(&self, s: impl Into<String>) {
         let s = s.into();
+        let hook = self.hooks.lock().unwrap().log.clone();
+        if let Some(f) = hook {
+            f(&s);
+            return;
+        }
         println!("{s}");
         self.st.lock().unwrap().log.push(s);
     }
@@ -57,6 +79,10 @@ impl Ui {
     }
 
     pub async fn ask(&self, label: &str, secret: bool) -> String {
+        let hook = self.hooks.lock().unwrap().ask.clone();
+        if let Some(f) = hook {
+            return tokio::task::block_in_place(|| f(label, secret)).trim().to_string();
+        }
         {
             let mut st = self.st.lock().unwrap();
             st.answer = None;

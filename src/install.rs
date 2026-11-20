@@ -110,6 +110,23 @@ async fn altstore_ipa() -> Option<String> {
 
 type ExtCb = fn(&[Bundle]) -> std::future::Ready<Result<ExtensionsBehavior, Report>>;
 
+/// Options used by the iOS app (the CLI uses the defaults).
+#[derive(Clone)]
+pub struct Opts {
+    /// Already-downloaded IPA to install (skips the app question and the download).
+    pub ipa: Option<PathBuf>,
+    /// "ask", "reuse" or "new"
+    pub cert_mode: String,
+    /// true = extensions share the main app ID (uses fewer app IDs)
+    pub reuse_main_ext: bool,
+}
+
+impl Default for Opts {
+    fn default() -> Self {
+        Opts { ipa: None, cert_mode: "ask".into(), reuse_main_ext: true }
+    }
+}
+
 pub async fn run(which: &str) -> Result<(), Err> {
     // reqwest (used by isideload) needs a rustls crypto provider to be installed first.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -121,7 +138,7 @@ pub async fn run(which: &str) -> Result<(), Err> {
     if !opened {
         ui.log(format!("Could not open it automatically. Open this address in a browser: {url}"));
     }
-    let res = run_inner(which, ui.clone()).await;
+    let res = run_inner(which, ui.clone(), Opts::default()).await;
     match &res {
         Ok(()) => ui.log("All done."),
         Err(err) => ui.log(format!("ERROR: {err}")),
@@ -131,8 +148,14 @@ pub async fn run(which: &str) -> Result<(), Err> {
     res
 }
 
-async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
+pub async fn run_with(ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
+    run_inner("", ui, opts).await
+}
+
+async fn run_inner(which: &str, ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
+    let preset = opts.ipa.clone();
     let choice = match which {
+        _ if preset.is_some() => "5".to_string(),
         "sidestore" => "1".to_string(),
         "altstore" => "2".to_string(),
         "livecontainer" => "3".to_string(),
@@ -156,6 +179,10 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
         _ => "CustomApp",
     }
     .to_string();
+    let name = match &preset {
+        Some(p) => p.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| "App".to_string()),
+        None => name,
+    };
     let dir = home_dir().join(".pairkit");
     tokio::fs::create_dir_all(&dir).await?;
     let pf_path = dir.join("rp_pairing_file.plist");
@@ -228,9 +255,13 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
         .map_err(e)?;
 
     // 4. Download the app.
-    let ipa = dir.join(format!("{name}.ipa"));
-    ui.log(format!("== Downloading the latest {name} =="));
-    if choice == "4" && !custom.starts_with("http") {
+    let ipa = preset.clone().unwrap_or_else(|| dir.join(format!("{name}.ipa")));
+    if choice != "5" {
+        ui.log(format!("== Downloading the latest {name} =="));
+    }
+    if choice == "5" {
+        // already downloaded by the app
+    } else if choice == "4" && !custom.starts_with("http") {
         tokio::fs::copy(&custom, &ipa).await.map_err(|x| format!("Can't read {custom}: {x}"))?;
     } else {
         let url = match choice.as_str() {
@@ -263,7 +294,11 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
             ui.log(format!("  {}: {} ({})", i + 1, c.name.clone().unwrap_or_default(), c.machine_name.clone().unwrap_or_default()));
         }
         ui.log("Note: a certificate can only be reused if pairkit made it earlier (it needs the saved key).");
-        let a = ask_choice(&ui).await;
+        let a = match opts.cert_mode.as_str() {
+            "reuse" => "1".to_string(),
+            "new" => "2".to_string(),
+            _ => ask_choice(&ui).await,
+        };
         if a == "2" {
             let which = ui.ask("Which to revoke? Numbers like 1 or 1,2, or type all", false).await;
             let mut serials = Vec::new();
@@ -313,7 +348,7 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
         }
     };
     let ext: ExtensionsBehaviorSelection<ExtCb> =
-        ExtensionsBehaviorSelection::Fixed(ExtensionsBehavior::ReuseMain);
+        ExtensionsBehaviorSelection::Fixed(if opts.reuse_main_ext { ExtensionsBehavior::ReuseMain } else { ExtensionsBehavior::RegisterAll });
     let mut sideloader = SideloaderBuilder::new(dev_session, email.clone())
         .storage(Box::new(FsStorage::new(dir.join("keys"))))
         .machine_name("pairkit".to_string())

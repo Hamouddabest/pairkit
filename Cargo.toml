@@ -3,6 +3,15 @@ name = "pairkit"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "pairkit_core"
+path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "pairkit"
+path = "src/main.rs"
+
 [dependencies]
 idevice = { version = "0.1.68", default-features = false, features = ["remote_pairing", "ring", "tcp", "tunnel_tcp_stack", "rsd", "xpc", "afc", "installation_proxy"] }
 isideload = { version = "0.5.2", default-features = false, features = ["install", "fs-storage", "tokio-mt"] }

@@ -2,8 +2,7 @@
 // No signing, no installing. Written against idevice 0.1.64, not yet compiled:
 // if the build fails, paste the error and it will be fixed.
 
-mod install;
-mod ui;
+use pairkit_core::install;
 
 use std::path::PathBuf;
 use std::time::Duration;
