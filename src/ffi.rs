@@ -22,6 +22,11 @@ extern "C" {
 
 #[derive(Clone, Copy)]
 struct Ctx(*mut c_void);
+impl Ctx {
+    fn get(self) -> *mut c_void {
+        self.0
+    }
+}
 unsafe impl Send for Ctx {}
 unsafe impl Sync for Ctx {}
 
@@ -60,7 +65,7 @@ pub extern "C" fn pk_pair_start(log: LogCb, pin: PinCb, done: DoneCb, ctx: *mut 
     let ctx = Ctx(ctx);
     let say = move |s: &str| {
         let c = cstr(s);
-        log(c.as_ptr(), ctx.0);
+        log(c.as_ptr(), ctx.get());
     };
     let res: Result<(String, u16, Vec<(String, String)>, tokio::net::TcpListener, RpPairingFile, PairableHostInfo), String> =
         rt().block_on(async {
@@ -108,7 +113,7 @@ pub extern "C" fn pk_pair_start(log: LogCb, pin: PinCb, done: DoneCb, ctx: *mut 
             let r = host
                 .accept(&mut pairing_file, move |p| async move {
                     let c = cstr(&format!("{p}"));
-                    pin(c.as_ptr(), pin_ctx.0);
+                    pin(c.as_ptr(), pin_ctx.get());
                 })
                 .await;
             match r {
@@ -118,11 +123,11 @@ pub extern "C" fn pk_pair_start(log: LogCb, pin: PinCb, done: DoneCb, ctx: *mut 
                     match tokio::fs::write(&path, &bytes).await {
                         Ok(()) => {
                             let c = cstr(&path.to_string_lossy());
-                            done(1, c.as_ptr(), ctx.0);
+                            done(1, c.as_ptr(), ctx.get());
                         }
                         Err(e) => {
                             let c = cstr(&format!("could not save the pairing file: {e}"));
-                            done(0, c.as_ptr(), ctx.0);
+                            done(0, c.as_ptr(), ctx.get());
                         }
                     }
                     return;
@@ -131,7 +136,7 @@ pub extern "C" fn pk_pair_start(log: LogCb, pin: PinCb, done: DoneCb, ctx: *mut 
             }
         }
         let c = cstr(&last_err);
-        done(0, c.as_ptr(), ctx.0);
+        done(0, c.as_ptr(), ctx.get());
     });
     *PAIR_TASK.lock().unwrap() = Some(handle);
 
@@ -168,11 +173,11 @@ pub extern "C" fn pk_install(ipa_path: *const c_char, opts_json: *const c_char, 
     ui.set_hooks(
         Arc::new(move |s: &str| {
             let c = cstr(s);
-            log(c.as_ptr(), ctx.0);
+            log(c.as_ptr(), ctx.get());
         }),
         Arc::new(move |label: &str, secret: bool| {
             let c = cstr(label);
-            let p = ask(c.as_ptr(), secret as i32, ctx.0);
+            let p = ask(c.as_ptr(), secret as i32, ctx.get());
             if p.is_null() {
                 return String::new();
             }
