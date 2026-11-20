@@ -168,7 +168,7 @@ button{width:100%;padding:13px;font-size:17px;border:0;border-radius:10px;backgr
 label.s{display:block;margin:4px 0 10px;font-size:14px}
 </style></head><body>
 <h1>pairkit</h1><div id="log">Starting...</div>
-<div id="exp" style="margin-top:14px;display:none"><button id="dl" style="margin-bottom:8px">Export pairing file (save to Files)</button><button id="cp" style="background:#334">Copy pairing file text</button></div>
+<div id="exp" style="margin-top:14px;display:none"><button id="dl" style="margin-bottom:8px">Export pairing file (share / save to Files)</button><button id="cp" style="background:#334">Copy pairing file text</button><textarea id="pt" readonly style="display:none;width:100%;box-sizing:border-box;height:140px;margin-top:8px;background:#0b0b0f;color:#fff;border:1px solid #445;border-radius:10px;font:12px ui-monospace,monospace"></textarea></div>
 <div id="card"><div id="lbl"></div><input id="v" autocapitalize="off" autocorrect="off" spellcheck="false">
 <label class="s" id="sw"><input type="checkbox" id="show"> Show what I type</label>
 <button id="go">Send</button></div>
@@ -185,7 +185,12 @@ async function poll(){try{const r=await fetch('/status');const s=await r.json();
   $('v').type=s.prompt.secret?'password':'text';$('show').checked=false;$('sw').style.display=s.prompt.secret?'block':'none';$('v').focus();}
  if(!s.prompt&&cur){cur=null;$('card').style.display='none';}
 }catch(e){}setTimeout(poll,1000)}
-$('dl').onclick=()=>{location.href='/pairing'};
+$('dl').onclick=async()=>{const t=await (await fetch('/pairing')).text();
+ $('pt').style.display='block';$('pt').value=t;
+ try{const f=new File([t],'pairing_file.plist',{type:'text/plain'});
+  if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f]});return}
+  if(navigator.share){await navigator.share({title:'pairing_file.plist',text:t});return}}catch(e){}
+ $('pt').select();};
 $('cp').onclick=async()=>{try{const t=await (await fetch('/pairing')).text();await navigator.clipboard.writeText(t);$('cp').textContent='Copied!'}catch(e){$('cp').textContent='Copy failed - use Export'}};
 fetch('/status').then(r=>r.json()).then(s=>{if(s.haspair)$('exp').style.display='block'});
 poll();
