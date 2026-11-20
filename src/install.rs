@@ -226,6 +226,189 @@ pub async fn manage_app_ids(ui: Arc<Ui>, anisette: Vec<String>) -> Result<(), Er
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------
+// Container ("guest app") support: sign an app with your certificate but under PairKit's own
+// app ID, so it needs no app ID of its own. The app's executable is turned into a loadable
+// library *before* signing, so the signature stays valid.
+// ---------------------------------------------------------------------------------------------
+
+fn patch_exec_to_dylib(buf: &mut Vec<u8>) -> Result<(), Err> {
+    if buf.len() < 32 {
+        return Err("The app's executable is too small to be valid.".into());
+    }
+    let magic = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    match magic {
+        0xfeedfacf => {
+            // thin 64-bit Mach-O: filetype is at offset 12 (2 = executable, 6 = dylib)
+            buf[12..16].copy_from_slice(&6u32.to_le_bytes());
+            Ok(())
+        }
+        0xbebafeca => {
+            // fat binary (big-endian header): patch every 64-bit ARM slice
+            let n = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+            let mut patched = false;
+            for i in 0..n {
+                let base = 8 + i * 20;
+                if base + 20 > buf.len() {
+                    break;
+                }
+                let cputype = u32::from_be_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]);
+                let off = u32::from_be_bytes([buf[base + 8], buf[base + 9], buf[base + 10], buf[base + 11]]) as usize;
+                if cputype == 0x0100000c && off + 16 <= buf.len() {
+                    buf[off + 12..off + 16].copy_from_slice(&6u32.to_le_bytes());
+                    patched = true;
+                }
+            }
+            if patched { Ok(()) } else { Err("No arm64 code found in the app.".into()) }
+        }
+        _ => Err("The app's executable is not a 64-bit iOS binary.".into()),
+    }
+}
+
+/// Copies the IPA, giving the app `new_bundle_id` and making its executable loadable.
+/// Returns (original bundle id, executable name).
+fn prepare_guest_ipa(src: &std::path::Path, dst: &std::path::Path, new_bundle_id: &str) -> Result<(String, String), Err> {
+    use std::io::{Cursor, Read, Write};
+    let mut zin = zip::ZipArchive::new(std::fs::File::open(src)?)?;
+    let mut info_name = None;
+    for i in 0..zin.len() {
+        let n = zin.by_index(i)?.name().to_string();
+        if n.starts_with("Payload/") && n.ends_with(".app/Info.plist") && n.matches('/').count() == 2 {
+            info_name = Some(n);
+            break;
+        }
+    }
+    let info_name = info_name.ok_or("This doesn't look like an IPA (no Info.plist).")?;
+    let app_prefix = info_name.trim_end_matches("Info.plist").to_string();
+
+    let mut raw = Vec::new();
+    zin.by_name(&info_name)?.read_to_end(&mut raw)?;
+    let mut info = plist::Value::from_reader(Cursor::new(&raw)).map_err(|x| format!("Bad Info.plist: {x}"))?;
+    let d = info.as_dictionary_mut().ok_or("Bad Info.plist")?;
+    let orig = d.get("CFBundleIdentifier").and_then(|v| v.as_string()).unwrap_or("").to_string();
+    let exe = d.get("CFBundleExecutable").and_then(|v| v.as_string()).ok_or("The app has no executable name.")?.to_string();
+    d.insert("PKGuestOriginalBundleID".into(), plist::Value::String(orig.clone()));
+    d.insert("CFBundleIdentifier".into(), plist::Value::String(new_bundle_id.to_string()));
+    let mut new_info = Vec::new();
+    plist::to_writer_xml(&mut new_info, &info).map_err(|x| format!("Could not write Info.plist: {x}"))?;
+    let exe_path = format!("{app_prefix}{exe}");
+
+    let mut zout = zip::ZipWriter::new(std::fs::File::create(dst)?);
+    for i in 0..zin.len() {
+        let mut f = zin.by_index(i)?;
+        let name = f.name().to_string();
+        let mode = f.unix_mode().unwrap_or(0o644);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(mode);
+        if f.is_dir() {
+            zout.add_directory(name, opts)?;
+            continue;
+        }
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf)?;
+        if name == info_name {
+            buf = new_info.clone();
+        } else if name == exe_path {
+            patch_exec_to_dylib(&mut buf)?;
+        }
+        zout.start_file(name, opts)?;
+        zout.write_all(&buf)?;
+    }
+    zout.finish()?;
+    Ok((orig, exe))
+}
+
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            copy_dir(&entry.path(), &to)?;
+        } else if ft.is_symlink() {
+            if let Ok(t) = std::fs::read_link(entry.path()) {
+                let _ = std::os::unix::fs::symlink(t, &to);
+            }
+        } else {
+            std::fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Signs `ipa` as a guest of PairKit and puts the result in `dest/App.app`.
+/// `host_bundle_id` is PairKit's own bundle id as installed on the phone.
+pub async fn sign_guest(ui: Arc<Ui>, ipa: PathBuf, dest: PathBuf, host_bundle_id: String, opts: Opts) -> Result<(), Err> {
+    let dir = home_dir().join(".pairkit");
+    tokio::fs::create_dir_all(&dir).await?;
+    let (email, mut dev_session) = apple_login(&ui, &dir, &opts.anisette).await?;
+    let teams = dev_session.list_teams().await.map_err(e)?;
+    let team = teams.into_iter().next().ok_or("No developer team on this Apple ID")?;
+
+    // Same app ID as PairKit itself: strip the team suffix the signer adds again.
+    let suffix = format!(".{}", team.team_id);
+    let base_id = host_bundle_id.strip_suffix(&suffix).unwrap_or(&host_bundle_id).to_string();
+    ui.log(format!("== Preparing the app (using PairKit's app ID {base_id}) =="));
+    let prepared = dir.join("guest_prepared.ipa");
+    let (orig, exe) = prepare_guest_ipa(&ipa, &prepared, &base_id)?;
+    ui.log(format!("App {orig}, executable {exe}"));
+
+    ui.log("== Signing ==");
+    let ui3 = ui.clone();
+    let max_certs = move |certs: Vec<DevelopmentCertificate>| {
+        let ui = ui3.clone();
+        async move {
+            ui.log("Your Apple ID has the maximum number of development certificates:");
+            for (i, c) in certs.iter().enumerate() {
+                ui.log(format!("  {}: {} ({})", i + 1, c.name.clone().unwrap_or_default(), c.machine_name.clone().unwrap_or_default()));
+            }
+            let a = ui.ask("Type the numbers to revoke (e.g. 1 or 1,2), or leave empty to cancel", false).await;
+            let mut ids = Vec::new();
+            for part in a.split(',') {
+                if let Ok(n) = part.trim().parse::<usize>() {
+                    if let Some(id) = certs.get(n.wrapping_sub(1)).and_then(|c| c.certificate_id.clone()) {
+                        ids.push(id);
+                    }
+                }
+            }
+            if ids.is_empty() { Ok::<_, Report>(None) } else { Ok(Some(ids)) }
+        }
+    };
+    let ext: ExtensionsBehaviorSelection<ExtCb> = ExtensionsBehaviorSelection::Fixed(ExtensionsBehavior::ReuseMain);
+    let mut sideloader = SideloaderBuilder::new(dev_session, email)
+        .storage(Box::new(FsStorage::new(dir.join("keys"))))
+        .machine_name("pairkit".to_string())
+        .max_certs_behavior(MaxCertsBehavior::Prompt(max_certs))
+        .extensions_behavior(ext)
+        .delete_app_after_install(false)
+        .build();
+    let ui4 = ui.clone();
+    let (signed, _special) = sideloader
+        .sign_app(
+            prepared.clone(),
+            Some(team),
+            false,
+            Some(move |p: f32| {
+                let ui = ui4.clone();
+                async move { ui.log(format!("  signing {}%", (p * 100.0) as u64)) }
+            }),
+            None,
+            None,
+        )
+        .await
+        .map_err(e)?;
+
+    let app_dir = dest.join("App.app");
+    let _ = std::fs::remove_dir_all(&app_dir);
+    std::fs::create_dir_all(&dest)?;
+    copy_dir(&signed, &app_dir)?;
+    let _ = std::fs::remove_file(&prepared);
+    ui.log(format!("Saved to {}", app_dir.display()));
+    Ok(())
+}
+
 type ExtCb = fn(&[Bundle]) -> std::future::Ready<Result<ExtensionsBehavior, Report>>;
 
 /// Options used by the iOS app (the CLI uses the defaults).
