@@ -72,10 +72,10 @@ async fn export_to_clipboard(bytes: &[u8]) {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let res = match args.get(1).map(|s| s.as_str()) {
-        Some("install") => install::run(args.get(2).map(|s| s.as_str()).unwrap_or("sidestore")).await,
+        Some("install") => install::run(args.get(2).map(|s| s.as_str()).unwrap_or("")).await,
         Some("--help") | Some("-h") | Some("help") => {
             println!("pairkit            pair this iPhone with itself and copy the pairing file");
-            println!("pairkit install sidestore   sign in with your Apple ID, sign SideStore and install it");
+            println!("pairkit install   sign in with your Apple ID, then pick SideStore / AltStore / LiveContainer / custom IPA");
             println!("pairkit install altstore    same, for AltStore");
             Ok(())
         }

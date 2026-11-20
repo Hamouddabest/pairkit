@@ -51,6 +51,63 @@ async fn ask_choice(ui: &Arc<Ui>) -> String {
     }
 }
 
+async fn wget_text(url: &str) -> Option<String> {
+    for _ in 0..3 {
+        let out = tokio::process::Command::new("wget").args(["-q", "-O", "-", url]).output().await.ok()?;
+        if out.status.success() && !out.stdout.is_empty() {
+            return String::from_utf8(out.stdout).ok();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    None
+}
+
+// Latest release asset from GitHub: the asset named `prefer`, else any .ipa.
+async fn github_ipa(repo: &str, prefer: &str) -> Option<String> {
+    let txt = wget_text(&format!("https://api.github.com/repos/{repo}/releases/latest")).await;
+    if let Some(txt) = txt {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            let assets = v.get("assets")?.as_array()?;
+            let pick = assets
+                .iter()
+                .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(prefer))
+                .or_else(|| assets.iter().find(|a| a.get("name").and_then(|n| n.as_str()).map_or(false, |n| n.ends_with(".ipa"))));
+            if let Some(u) = pick.and_then(|a| a.get("browser_download_url")).and_then(|u| u.as_str()) {
+                return Some(u.to_string());
+            }
+        }
+    }
+    Some(format!("https://github.com/{repo}/releases/latest/download/{prefer}"))
+}
+
+// AltStore's official source lists versions newest first.
+async fn altstore_ipa() -> Option<String> {
+    let txt = wget_text("https://cdn.altstore.io/file/altstore/apps.json").await;
+    if let Some(txt) = txt {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            let app = v
+                .get("apps")?
+                .as_array()?
+                .iter()
+                .find(|a| a.get("bundleIdentifier").and_then(|b| b.as_str()) == Some("com.rileytestut.AltStore"));
+            let u = app
+                .and_then(|a| a.get("versions"))
+                .and_then(|vs| vs.as_array())
+                .and_then(|vs| vs.first())
+                .and_then(|x| x.get("downloadURL"))
+                .and_then(|u| u.as_str());
+            if let Some(u) = u {
+                return Some(u.to_string());
+            }
+            let u = app.and_then(|a| a.get("downloadURL")).and_then(|u| u.as_str());
+            if let Some(u) = u {
+                return Some(u.to_string());
+            }
+        }
+    }
+    Some("https://cdn.altstore.io/file/altstore/altstore.ipa".to_string())
+}
+
 type ExtCb = fn(&[Bundle]) -> std::future::Ready<Result<ExtensionsBehavior, Report>>;
 
 pub async fn run(which: &str) -> Result<(), Err> {
@@ -75,10 +132,30 @@ pub async fn run(which: &str) -> Result<(), Err> {
 }
 
 async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
-    let (name, url) = match which {
-        "altstore" => ("AltStore", "https://cdn.altstore.io/file/altstore/altstore.ipa"),
-        _ => ("SideStore", "https://github.com/SideStore/SideStore/releases/latest/download/SideStore.ipa"),
+    let choice = match which {
+        "sidestore" => "1".to_string(),
+        "altstore" => "2".to_string(),
+        "livecontainer" => "3".to_string(),
+        _ => loop {
+            let a = ui
+                .ask("Which app? Type 1 = SideStore, 2 = AltStore, 3 = LiveContainer, 4 = custom IPA", false)
+                .await;
+            if ["1", "2", "3", "4"].contains(&a.as_str()) {
+                break a;
+            }
+        },
     };
+    let mut custom = String::new();
+    if choice == "4" {
+        custom = ui.ask("Paste the IPA link (https://...) or a file path", false).await;
+    }
+    let name = match choice.as_str() {
+        "1" => "SideStore",
+        "2" => "AltStore",
+        "3" => "LiveContainer",
+        _ => "CustomApp",
+    }
+    .to_string();
     let dir = home_dir().join(".pairkit");
     tokio::fs::create_dir_all(&dir).await?;
     let pf_path = dir.join("rp_pairing_file.plist");
@@ -152,10 +229,25 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
 
     // 4. Download the app.
     let ipa = dir.join(format!("{name}.ipa"));
-    ui.log(format!("== Downloading {name} =="));
-    let st = tokio::process::Command::new("wget").arg("-q").arg("-O").arg(&ipa).arg(url).status().await?;
-    if !st.success() {
-        return Err(format!("Download failed. Try: wget -O {} {url}", ipa.display()).into());
+    ui.log(format!("== Downloading the latest {name} =="));
+    if choice == "4" && !custom.starts_with("http") {
+        tokio::fs::copy(&custom, &ipa).await.map_err(|x| format!("Can't read {custom}: {x}"))?;
+    } else {
+        let url = match choice.as_str() {
+            "1" => github_ipa("SideStore/SideStore", "SideStore.ipa").await,
+            "2" => altstore_ipa().await,
+            "3" => github_ipa("LiveContainer/LiveContainer", "LiveContainer.ipa").await,
+            _ => Some(custom.clone()),
+        };
+        let url = match url {
+            Some(u) => u,
+            None => return Err("Couldn't find the latest download link (network problem?). Try again.".into()),
+        };
+        ui.log(format!("  from {url}"));
+        let st = tokio::process::Command::new("wget").arg("-q").arg("-O").arg(&ipa).arg(&url).status().await?;
+        if !st.success() {
+            return Err(format!("Download failed. Try: wget -O {} {url}", ipa.display()).into());
+        }
     }
 
     // 5. Sign. Reuses the certificate pairkit made before; if your account is full, it asks
