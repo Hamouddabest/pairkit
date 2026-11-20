@@ -87,6 +87,7 @@ async fn run_inner(which: &str, ui: Arc<Ui>) -> Result<(), Err> {
     }
     let mut pairing_file = RpPairingFile::read_from_file(&pf_path).await.map_err(e)?;
     let pairing_bytes = pairing_file.to_bytes();
+    ui.set_pairing(pairing_bytes.clone());
 
     // 1. Apple ID first, so you can see problems before the tunnel work.
     ui.log(format!("== Apple ID =="));

@@ -17,6 +17,7 @@ struct St {
     prompt: Option<Prompt>,
     answer: Option<String>,
     done: bool,
+    pairing: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -45,6 +46,10 @@ impl Ui {
         let s = s.into();
         println!("{s}");
         self.st.lock().unwrap().log.push(s);
+    }
+
+    pub fn set_pairing(&self, b: Vec<u8>) {
+        self.st.lock().unwrap().pairing = b;
     }
 
     pub fn finish(&self) {
@@ -76,7 +81,7 @@ impl Ui {
             Some(p) => format!("{{\"label\":\"{}\",\"secret\":{}}}", esc(&p.label), p.secret),
             None => "null".to_string(),
         };
-        format!("{{\"log\":[{}],\"prompt\":{},\"done\":{}}}", log.join(","), prompt, st.done)
+        format!("{{\"log\":[{}],\"prompt\":{},\"done\":{},\"haspair\":{}}}", log.join(","), prompt, st.done, !st.pairing.is_empty())
     }
 
     fn submit(&self, v: String) {
@@ -114,19 +119,25 @@ impl Ui {
             }
         }
         let body = String::from_utf8_lossy(&buf[head_end..]).to_string();
-        let (ctype, out) = if first.starts_with("GET /status") {
-            ("application/json", self.status_json())
+        let mut extra = String::new();
+        let (ctype, out): (&str, Vec<u8>) = if first.starts_with("GET /status") {
+            ("application/json", self.status_json().into_bytes())
+        } else if first.starts_with("GET /pairing") {
+            extra.push_str("Content-Disposition: attachment; filename=\"pairing_file.plist\"\r\n");
+            ("application/octet-stream", self.st.lock().unwrap().pairing.clone())
         } else if first.starts_with("POST /answer") {
             self.submit(body);
-            ("text/plain", "ok".to_string())
+            ("text/plain", b"ok".to_vec())
         } else {
-            ("text/html; charset=utf-8", PAGE.to_string())
+            ("text/html; charset=utf-8", PAGE.as_bytes().to_vec())
         };
-        let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+        let mut resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\n{extra}Cache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             out.len()
-        );
-        let _ = s.write_all(resp.as_bytes()).await;
+        )
+        .into_bytes();
+        resp.extend_from_slice(&out);
+        let _ = s.write_all(&resp).await;
         let _ = s.shutdown().await;
     }
 }
@@ -157,6 +168,7 @@ button{width:100%;padding:13px;font-size:17px;border:0;border-radius:10px;backgr
 label.s{display:block;margin:4px 0 10px;font-size:14px}
 </style></head><body>
 <h1>pairkit</h1><div id="log">Starting...</div>
+<div id="exp" style="margin-top:14px;display:none"><button id="dl" style="margin-bottom:8px">Export pairing file (save to Files)</button><button id="cp" style="background:#334">Copy pairing file text</button></div>
 <div id="card"><div id="lbl"></div><input id="v" autocapitalize="off" autocorrect="off" spellcheck="false">
 <label class="s" id="sw"><input type="checkbox" id="show"> Show what I type</label>
 <button id="go">Send</button></div>
@@ -173,5 +185,8 @@ async function poll(){try{const r=await fetch('/status');const s=await r.json();
   $('v').type=s.prompt.secret?'password':'text';$('show').checked=false;$('sw').style.display=s.prompt.secret?'block':'none';$('v').focus();}
  if(!s.prompt&&cur){cur=null;$('card').style.display='none';}
 }catch(e){}setTimeout(poll,1000)}
+$('dl').onclick=()=>{location.href='/pairing'};
+$('cp').onclick=async()=>{try{const t=await (await fetch('/pairing')).text();await navigator.clipboard.writeText(t);$('cp').textContent='Copied!'}catch(e){$('cp').textContent='Copy failed - use Export'}};
+fetch('/status').then(r=>r.json()).then(s=>{if(s.haspair)$('exp').style.display='block'});
 poll();
 </script></body></html>"##;
