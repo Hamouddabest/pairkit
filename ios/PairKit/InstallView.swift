@@ -9,6 +9,8 @@ struct InstallView: View {
     @State private var pickedFile: URL?
     @State private var showPicker = false
     @State private var didInit = false
+    @State private var importMsg: String?
+    @State private var pickedName = ""
 
     var body: some View {
         ZStack {
@@ -45,8 +47,11 @@ struct InstallView: View {
                                     .keyboardType(.URL)
                                     .padding(12)
                                     .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.35)))
-                                SoftButton(title: pickedFile == nil ? "Or choose an IPA file" : "File: \(pickedFile!.lastPathComponent)", symbol: "doc") {
+                                SoftButton(title: pickedFile == nil ? "Or choose an IPA file" : "File: \(pickedName)", symbol: pickedFile == nil ? "doc" : "checkmark.circle.fill") {
                                     showPicker = true
+                                }
+                                if let m = importMsg {
+                                    Text(m).font(.footnote).foregroundColor(.orange)
                                 }
                             }
                         }
@@ -71,15 +76,40 @@ struct InstallView: View {
                 if let d = AppItem.all.first(where: { $0.id == defaultApp }) { selected = d }
             }
         }
-        .fileImporter(isPresented: $showPicker, allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data, .data]) { result in
-            if case .success(let url) = result {
-                let ok = url.startAccessingSecurityScopedResource()
-                defer { if ok { url.stopAccessingSecurityScopedResource() } }
-                let dest = engine.ipaDir.appendingPathComponent("custom.ipa")
-                try? FileManager.default.createDirectory(at: engine.ipaDir, withIntermediateDirectories: true)
-                try? FileManager.default.removeItem(at: dest)
-                if (try? FileManager.default.copyItem(at: url, to: dest)) != nil {
+        .fileImporter(isPresented: $showPicker, allowedContentTypes: [.item, .data]) { result in
+            switch result {
+            case .success(let url): importFile(url)
+            case .failure(let e): importMsg = "Couldn't open that file: \(e.localizedDescription)"
+            }
+        }
+    }
+
+    // Copies the chosen file into the app (downloading it first if it only lives in iCloud).
+    private func importFile(_ url: URL) {
+        importMsg = "Importing \(url.lastPathComponent)..."
+        let dest = engine.ipaDir.appendingPathComponent("custom.ipa")
+        let dir = engine.ipaDir
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = url.startAccessingSecurityScopedResource()
+            defer { if ok { url.stopAccessingSecurityScopedResource() } }
+            var coordErr: NSError?
+            var copyErr: Error?
+            NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordErr) { readURL in
+                do {
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    try? FileManager.default.removeItem(at: dest)
+                    try FileManager.default.copyItem(at: readURL, to: dest)
+                } catch {
+                    copyErr = error
+                }
+            }
+            DispatchQueue.main.async {
+                if let e = copyErr ?? coordErr {
+                    importMsg = "Couldn't import: \(e.localizedDescription)"
+                } else {
                     pickedFile = dest
+                    pickedName = url.lastPathComponent
+                    importMsg = nil
                 }
             }
         }
