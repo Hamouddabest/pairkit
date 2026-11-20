@@ -12,19 +12,6 @@ jobs:
           rustup toolchain install stable --profile minimal
           cargo new probe && cd probe
           cargo add isideload@0.5.2
-          cargo add idevice@0.1.68 --features remote_pairing,ring,tunnel_tcp_stack,rsd,afc,installation_proxy,tcp,xpc || true
           cargo fetch
           d=$(ls -d ~/.cargo/registry/src/*/isideload-* | head -1)
-          i=$(ls -d ~/.cargo/registry/src/*/idevice-0.1.* | sort -V | tail -1)
-          echo "=== idevice Cargo.toml features ==="; sed -n '/\[features\]/,/^\[\[/p' "$i/Cargo.toml" | head -120
-          echo "=== isideload Cargo.toml ==="; cat "$d/Cargo.toml"
-          echo "=== jktcp ==="; ls -d ~/.cargo/registry/src/*/jktcp-* ; j=$(ls -d ~/.cargo/registry/src/*/jktcp-* | sort -V | tail -1); ls $j/src; grep -n "pub \(async \)\?fn\|pub struct" $j/src/*.rs | head -80
-          echo "=== idevice provider.rs ==="; cat "$i/src/provider.rs"
-          echo "=== rp_pairing_file pub ==="; grep -n "pub " "$i/src/remote_pairing/rp_pairing_file.rs"
-          echo "=== idevice tcp pub ==="; grep -rn "pub " "$i/src/tcp/" | head -50
-          echo "=== isideload developer_session ==="; sed -n 1,100p "$d/src/dev/developer_session.rs"
-          echo "=== isideload fs_storage ==="; cat "$d/src/util/fs_storage.rs" 2>/dev/null || grep -rln "FsStorage\|fs_storage" "$d/src"
-          echo "=== isideload storage trait ==="; cat "$d/src/util/storage.rs"
-          echo "=== isideload builder ==="; cat "$d/src/sideload/builder.rs"
-          echo "=== isideload lib ==="; cat "$d/src/lib.rs"
-          echo "=== AppleAccountBuilder ==="; grep -n "pub " "$d/src/auth/builder.rs"
+          echo "=== app_ids.rs ==="; cat "$d/src/dev/app_ids.rs"
