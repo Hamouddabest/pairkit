@@ -150,7 +150,7 @@ final class Engine: NSObject, ObservableObject {
         let svc = NetService(domain: "", type: "_remotepairing-pairable-host._tcp.", name: identifier, port: Int32(port))
         var d: [String: Data] = [:]
         for (k, v) in txt { d[k] = Data(v.utf8) }
-        svc.setTXTRecord(NetService.data(fromTXT: d))
+        svc.setTXTRecord(NetService.data(fromTXTRecord: d))
         svc.publish()
         service = svc
         if UserDefaults.standard.object(forKey: "keepAwakeAudio") as? Bool ?? true { startAwakeAudio() }
