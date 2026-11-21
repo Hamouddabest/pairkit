@@ -409,6 +409,47 @@ pub async fn sign_guest(ui: Arc<Ui>, ipa: PathBuf, dest: PathBuf, host_bundle_id
     Ok(())
 }
 
+/// If the account has no app IDs left, shows them and offers to delete some.
+async fn offer_free_app_ids(ui: &Arc<Ui>, dev: &mut DeveloperSession, team: &isideload::dev::teams::DeveloperTeam) -> Result<(), Err> {
+    let resp = dev.list_app_ids(team, DeveloperDeviceType::Ios).await.map_err(e)?;
+    if resp.available_quantity.unwrap_or(1) >= 1 {
+        return Ok(());
+    }
+    ui.log("== App IDs ==");
+    ui.log("Your Apple ID has no app IDs left (free accounts get about 10 per week). Your app IDs:");
+    for (i, a) in resp.app_ids.iter().enumerate() {
+        let exp = a.expiration_date.map(|d| d.to_xml_format()).unwrap_or_default();
+        ui.log(format!("  {}: {} ({}) {}", i + 1, a.name, a.identifier, exp.chars().take(10).collect::<String>()));
+    }
+    ui.log("Deleting an app ID makes the app that uses it stop opening until you reinstall it.");
+    let a = ui.ask("Type the numbers to DELETE (e.g. 1,2 or all), or leave empty to skip", false).await;
+    let a = a.trim().to_string();
+    if a.is_empty() {
+        return Ok(());
+    }
+    let mut picked: Vec<String> = Vec::new();
+    if a.eq_ignore_ascii_case("all") {
+        picked = resp.app_ids.iter().map(|x| x.app_id_id.clone()).collect();
+    } else {
+        for part in a.split(',') {
+            if let Ok(n) = part.trim().parse::<usize>() {
+                if let Some(x) = resp.app_ids.get(n.wrapping_sub(1)) {
+                    picked.push(x.app_id_id.clone());
+                }
+            }
+        }
+    }
+    for id in picked {
+        match dev.delete_app_id(team, &id, DeveloperDeviceType::Ios).await {
+            Ok(()) => ui.log(format!("Deleted app ID {id}")),
+            Err(err) => ui.log(format!("Could not delete {id}: {}", format!("{err:?}").lines().next().unwrap_or(""))),
+        }
+    }
+    let after = dev.list_app_ids(team, DeveloperDeviceType::Ios).await.map_err(e)?;
+    ui.log(format!("App IDs left now: {}", after.available_quantity.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into())));
+    Ok(())
+}
+
 type ExtCb = fn(&[Bundle]) -> std::future::Ready<Result<ExtensionsBehavior, Report>>;
 
 /// Options used by the iOS app (the CLI uses the defaults).
@@ -606,6 +647,7 @@ async fn run_inner(which: &str, ui: Arc<Ui>, opts: Opts) -> Result<(), Err> {
             ui.log("Reusing the saved certificate if it matches.");
         }
     }
+    offer_free_app_ids(&ui, &mut dev_session, &team).await?;
     ui.log(format!("== Signing =="));
     let ui3 = ui.clone();
     let max_certs = move |certs: Vec<DevelopmentCertificate>| {
