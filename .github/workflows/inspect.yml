@@ -14,4 +14,4 @@ jobs:
           cargo add isideload@0.5.2
           cargo fetch
           d=$(ls -d ~/.cargo/registry/src/*/isideload-* | head -1)
-          echo "=== app_ids.rs ==="; cat "$d/src/dev/app_ids.rs"
+          echo "=== application.rs ==="; sed -n 150,300p "$d/src/sideload/application.rs"
