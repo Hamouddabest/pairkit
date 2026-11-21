@@ -123,7 +123,11 @@ async fn apple_login(ui: &Arc<Ui>, dir: &std::path::Path, anisette: &[String]) -
     let servers: Vec<String> = if opts_anisette.is_empty() { vec![String::new()] } else { opts_anisette.clone() };
     let mut account = None;
     let mut last_err = String::new();
-    for url in servers.iter() {
+    let mut idx = 0usize;
+    let mut dns_tries = 0u32;
+    while idx < servers.len() {
+        let url = servers[idx].clone();
+        idx += 1;
         let ui2 = ui.clone();
         let two_factor = move |p: TwoFactorCallbackParams| {
             let ui = ui2.clone();
@@ -148,7 +152,7 @@ async fn apple_login(ui: &Arc<Ui>, dir: &std::path::Path, anisette: &[String]) -
             ui.log(format!("Signing in (anisette server {url})..."));
             let tag: String = url.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
             let storage = FsStorage::new(dir.join("anisette").join(tag));
-            match RemoteV3AnisetteProvider::new(url, Box::new(storage), "0".to_string()) {
+            match RemoteV3AnisetteProvider::new(&url, Box::new(storage), "0".to_string()) {
                 Ok(prov) => builder = builder.anisette_provider(prov),
                 Err(err) => {
                     last_err = format!("{err:?}");
@@ -166,6 +170,14 @@ async fn apple_login(ui: &Arc<Ui>, dir: &std::path::Path, anisette: &[String]) -
                 last_err = format!("{err:?}");
                 let low = last_err.to_lowercase();
                 ui.log(format!("Sign-in failed: {}", last_err.lines().next().unwrap_or("")));
+                // Flaky network lookup (common with a VPN on): wait and retry the same server.
+                if (low.contains("dns error") || low.contains("try again")) && dns_tries < 6 {
+                    dns_tries += 1;
+                    idx -= 1;
+                    ui.log(format!("Network lookup failed. Retrying in 3s ({dns_tries}/6)..."));
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
                 // Wrong password / cancelled: another server won't help.
                 if low.contains("incorrect") || low.contains("-20101") || low.contains("abort") {
                     break;
@@ -178,7 +190,22 @@ async fn apple_login(ui: &Arc<Ui>, dir: &std::path::Path, anisette: &[String]) -
         Some(a) => a,
         None => return Err(format!("Could not sign in. {last_err}").into()),
     };
-    let dev_session = DeveloperSession::from_account(&mut account).await.map_err(e)?;
+    let mut tries = 0;
+    let dev_session = loop {
+        match DeveloperSession::from_account(&mut account).await {
+            Ok(d) => break d,
+            Err(err) => {
+                let msg = format!("{err:?}").to_lowercase();
+                tries += 1;
+                if (msg.contains("dns error") || msg.contains("try again") || msg.contains("connect")) && tries < 8 {
+                    ui.log(format!("Network hiccup getting the developer token. Retrying in 3s ({tries}/8)..."));
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+                return Err(e(err));
+            }
+        }
+    };
     drop(password);
     Ok((email, dev_session))
 }
