@@ -370,6 +370,7 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
 pub async fn sign_guest(ui: Arc<Ui>, ipa: PathBuf, dest: PathBuf, host_bundle_id: String, opts: Opts) -> Result<(), Err> {
     let dir = home_dir().join(".pairkit");
     tokio::fs::create_dir_all(&dir).await?;
+    pin_hosts(&ui, &opts.anisette).await;
     let (email, mut dev_session) = apple_login(&ui, &dir, &opts.anisette).await?;
     let teams = dev_session.list_teams().await.map_err(e)?;
     let team = teams.into_iter().next().ok_or("No developer team on this Apple ID")?;
@@ -476,6 +477,65 @@ async fn offer_free_app_ids(ui: &Arc<Ui>, dev: &mut DeveloperSession, team: &isi
     ui.log(format!("App IDs left now: {}", after.available_quantity.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into())));
     Ok(())
 }
+
+/// Minis' DNS is flaky (especially with the VPN on), so look up Apple's servers once over
+/// DNS-over-HTTPS (by IP, no DNS needed) and pin them in /etc/hosts for this run.
+#[cfg(target_os = "linux")]
+async fn pin_hosts(ui: &Arc<Ui>, extra: &[String]) {
+    let mut hosts: Vec<String> = ["gsa.apple.com", "gsas.apple.com", "idmsa.apple.com", "developerservices2.apple.com", "developer.apple.com", "auth.apple.com", "ani.iloader.app", "ani.sidestore.io"]
+        .iter()
+        .map(|x| x.to_string())
+        .collect();
+    for u in extra {
+        let h = u.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or("").split(':').next().unwrap_or("").to_string();
+        if !h.is_empty() && !hosts.contains(&h) {
+            hosts.push(h);
+        }
+    }
+    let mut lines: Vec<String> = Vec::new();
+    for h in &hosts {
+        for _ in 0..3 {
+            let url = format!("https://1.1.1.1/dns-query?name={h}&type=A");
+            let out = tokio::process::Command::new("wget")
+                .args(["-q", "-O", "-", "--header", "accept: application/dns-json", &url])
+                .output()
+                .await;
+            if let Ok(o) = out {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout) {
+                    let ip = v
+                        .get("Answer")
+                        .and_then(|a| a.as_array())
+                        .and_then(|a| a.iter().find(|x| x.get("type").and_then(|t| t.as_u64()) == Some(1)))
+                        .and_then(|x| x.get("data"))
+                        .and_then(|d| d.as_str())
+                        .map(|d| d.to_string());
+                    if let Some(ip) = ip {
+                        lines.push(format!("{ip} {h} # pairkit"));
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+    if lines.is_empty() {
+        ui.log("Could not pre-resolve Apple's servers; using normal DNS.");
+        return;
+    }
+    let old = std::fs::read_to_string("/etc/hosts").unwrap_or_default();
+    let mut keep: Vec<&str> = old.lines().filter(|l| !l.contains("# pairkit")).collect();
+    let owned: Vec<String> = lines.clone();
+    for l in &owned {
+        keep.push(l);
+    }
+    match std::fs::write("/etc/hosts", keep.join("\n") + "\n") {
+        Ok(()) => ui.log(format!("Pinned {} Apple servers to avoid DNS problems.", lines.len())),
+        Err(err) => ui.log(format!("Could not write /etc/hosts ({err}); using normal DNS.")),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn pin_hosts(_ui: &Arc<Ui>, _extra: &[String]) {}
 
 type ExtCb = fn(&[Bundle]) -> std::future::Ready<Result<ExtensionsBehavior, Report>>;
 
