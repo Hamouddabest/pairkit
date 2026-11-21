@@ -440,7 +440,9 @@ pub async fn sign_guest(ui: Arc<Ui>, ipa: PathBuf, dest: PathBuf, host_bundle_id
 /// If the account has no app IDs left, shows them and offers to delete some.
 async fn offer_free_app_ids(ui: &Arc<Ui>, dev: &mut DeveloperSession, team: &isideload::dev::teams::DeveloperTeam) -> Result<(), Err> {
     let resp = dev.list_app_ids(team, DeveloperDeviceType::Ios).await.map_err(e)?;
-    if resp.available_quantity.unwrap_or(1) >= 1 {
+    ui.log(format!("Apple reports {:?} of {:?} app IDs available ({} registered).", resp.available_quantity, resp.max_quantity, resp.app_ids.len()));
+    // Nothing registered, or slots left: nothing to free (the number can be unreliable).
+    if resp.available_quantity.unwrap_or(1) >= 1 || resp.app_ids.is_empty() {
         return Ok(());
     }
     ui.log("== App IDs ==");

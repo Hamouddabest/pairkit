@@ -22,6 +22,15 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup target add aarch64-unknown-linux-musl
 
+      - name: Patch isideload (skip its app-ID count pre-check; Apple still enforces the real limit)
+        run: |
+          cargo fetch || true
+          d=$(ls -d ~/.cargo/registry/src/*/isideload-0.5.2 | head -1)
+          cp -r "$d" vendor-isideload
+          perl -0pi -e 's/if app_ids_to_register\.len\(\) > available\.try_into\(\)\? \{/if false \&\& app_ids_to_register.len() > available.try_into()? {/' vendor-isideload/src/sideload/application.rs
+          grep -c "if false && app_ids_to_register" vendor-isideload/src/sideload/application.rs
+          printf '\n[patch.crates-io]\nisideload = { path = "vendor-isideload" }\n' >> Cargo.toml
+
       - name: Build static binary
         env:
           RUSTFLAGS: "-C target-feature=+crt-static -C relocation-model=static"
